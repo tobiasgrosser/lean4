@@ -313,7 +313,7 @@ message("llvm-config: libdir '${LLVM_CONFIG_LIBDIR}' | ldflags '${LLVM_CONFIG_LD
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   find_package(ZLIB REQUIRED)
   message("ZLIB_LIBRARY: ${ZLIB_LIBRARY}")
-  string(APPEND LEAN_EXTRA_LINKER_FLAGS " -framework ${ZLIB_LIBRARY} -lz")
+  string(APPEND LEAN_EXTRA_LINKER_FLAGS " -I/Applications/Xcode_13.2.1.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX12.1.sdk/usr/lib/ -lz")
 
   string(APPEND LEANC_STATIC_LINKER_FLAGS " -lleancpp -lInit -lLean -lleanrt ${LLVM_CONFIG_LDFLAGS} ${LLVM_CONFIG_LIBS}")
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
