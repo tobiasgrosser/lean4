@@ -56,10 +56,6 @@ Author: Leonardo de Moura
 #include <dlfcn.h>
 #endif
 
-#ifdef LEAN_LLVM
-#include <llvm-c/Target.h>
-#endif
-
 #ifdef _MSC_VER
 // extremely simple implementation of getopt.h
 enum arg_opt { no_argument, required_argument, optional_argument };
@@ -433,6 +429,8 @@ void check_optarg(char const * option_name) {
     }
 }
 
+extern "C" void initialize_llvm_backend();
+
 extern "C" object * lean_enable_initializer_execution(object * w);
 
 extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
@@ -751,11 +749,9 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
         if (llvm_output && ok) {
           initialize_Lean_Compiler_IR_EmitLLVM(/*builtin*/ false,
                                                lean_io_mk_world());
-#ifdef LEAN_LLVM
-          LLVMInitializeNativeTarget();
-          LLVMInitializeNativeAsmParser();
-          LLVMInitializeNativeAsmPrinter();
-#endif
+
+	  //initialize_llvm_backend();
+
           time_task _("LLVM code generation", opts);
           object *r = lean_ir_emit_llvm(
               env.to_obj_arg(), (*main_module_name).to_obj_arg(),

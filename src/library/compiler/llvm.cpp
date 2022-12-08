@@ -27,7 +27,20 @@ Lean's IR.
 #include <llvm-c/Types.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <llvm-c/Transforms/PassManagerBuilder.h>
+#endif
 
+extern "C" LEAN_EXPORT lean_object* lean_llvm_initialize() {
+
+#ifdef LEAN_LLVM
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmParser();
+    LLVMInitializeNativeAsmPrinter();
+#endif
+
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+#ifdef LEAN_LLVM
 // == LLVM <-> Lean: Target ==
 static inline size_t Target_to_lean(LLVMTargetRef s) {
     return reinterpret_cast<size_t>(s);

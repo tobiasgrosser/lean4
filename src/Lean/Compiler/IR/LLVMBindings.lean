@@ -73,6 +73,9 @@ structure Value (ctx : Context) where
   private mk :: ptr : USize
 instance : Nonempty (Value ctx) := ⟨{ ptr := default }⟩
 
+@[extern "lean_llvm_initialize"]
+opaque llvmInitialize : BaseIO (Unit)
+
 @[extern "lean_llvm_create_context"]
 opaque createContext : BaseIO (Context)
 

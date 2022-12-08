@@ -2210,6 +2210,7 @@ def optimizeLLVMModule (mod: LLVM.Module ctx): IO Unit := do
 -- | TODO: Use a beter type signature than this.
 @[export lean_ir_emit_llvm]
 def emitLLVM (env : Environment) (modName : Name) (filepath: String): IO Unit := do
+  LLVM.llvmInitialize
   let llvmctx ← LLVM.createContext
   let module ← LLVM.createModule llvmctx modName.toString -- TODO: pass module name
   let emitLLVMCtx : EmitLLVM.Context llvmctx := {env := env, modName := modName, llvmmodule := module}
