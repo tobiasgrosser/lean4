@@ -2193,16 +2193,8 @@ def main : M llvmctx Unit := do
 end EmitLLVM
 
 
--- This imitates `Lean/Util/Path.lean`, implementing `Lean.getLibDir`
--- get the path to `lean.h.bc`, which has the contents of everything
--- that needs to be inlined during compilation.
-open System in
-def getLeanHBcPath : IO FilePath := do
-  let mut buildDir ← getBuildDir
-  -- use stage1 stdlib with stage0 executable (which should never be distributed outside of the build directory)
-  if Internal.isStage0 () then
-    buildDir := buildDir / ".." / "stage1"
-  return buildDir / "runtime" / "lean.h.bc"
+def getLeanHBcPath : IO System.FilePath := do
+  return (← getLibDir (← getBuildDir)) / "lean.h.bc"
 
 
 def optimizeLLVMModule (mod: LLVM.Module ctx): IO Unit := do
