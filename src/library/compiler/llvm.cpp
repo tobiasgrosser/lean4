@@ -18,15 +18,15 @@ Lean's IR.
 #include "runtime/string_ref.h"
 
 #ifdef LEAN_LLVM
-#include <llvm-c/BitReader.h>
-#include <llvm-c/BitWriter.h>
-#include <llvm-c/Core.h>
-#include <llvm-c/Linker.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/TargetMachine.h>
-#include <llvm-c/Types.h>
-#include <llvm-c/Transforms/PassBuilder.h>
-#include <llvm-c/Transforms/PassManagerBuilder.h>
+#include "llvm-c/BitReader.h"
+#include "llvm-c/BitWriter.h"
+#include "llvm-c/Core.h"
+#include "llvm-c/Linker.h"
+#include "llvm-c/Target.h"
+#include "llvm-c/TargetMachine.h"
+#include "llvm-c/Types.h"
+#include "llvm-c/Transforms/PassBuilder.h"
+#include "llvm-c/Transforms/PassManagerBuilder.h"
 #endif
 
 extern "C" LEAN_EXPORT lean_object* lean_llvm_initialize() {
@@ -639,10 +639,6 @@ extern "C" LEAN_EXPORT lean_object *lean_llvm_build_inbounds_gep2(size_t ctx,
     lean::array_ref<lean_object *> indices_array_ref(indices, true);
     LLVMValueRef *indices_carr = array_ref_to_ArrayLLVMValue(indices_array_ref);
     lean::string_ref name_ref(name, true);
-
-    printf("name: %10s | ty: %30s | value: %30s\n", name_ref.data(),
-		    LLVMPrintTypeToString(lean_to_Type(ty)),
-		    LLVMPrintValueToString(lean_to_Value(pointer)));
 
     LLVMValueRef out = LLVMBuildInBoundsGEP2(
         lean_to_Builder(builder), lean_to_Type(ty), lean_to_Value(pointer), indices_carr,

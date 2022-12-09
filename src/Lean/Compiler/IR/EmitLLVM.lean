@@ -918,10 +918,9 @@ def emitLit (builder: LLVM.Builder llvmctx) (z : VarId) (t : IRType) (v : LitVal
                  -- let str_global ← LLVM.buildGlobalString builder (quoteString v) "" -- (v.utf8ByteSiz)
                  let str_global ← LLVM.buildGlobalString builder v "" -- (v.utf8ByteSiz)
                  -- access through the global, into the 0th index of the array
-                 let zero ← LLVM.constIntUnsigned llvmctx 0
-                 let strPtr ← LLVM.buildInBoundsGEP2 builder
+                 let strPtr ← LLVM.buildLoad2 builder
                                 (← LLVM.opaquePointerTypeInContext llvmctx)
-                                str_global  #[zero, zero] ""
+                                str_global
                  let nbytes ← LLVM.constIntUnsigned llvmctx (UInt64.ofNat (v.utf8ByteSize))
                  callLeanMkStringFromBytesFn builder strPtr nbytes ""
   LLVM.buildStore builder zv zslot
