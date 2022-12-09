@@ -915,11 +915,12 @@ def emitLit (builder: LLVM.Builder llvmctx) (z : VarId) (t : IRType) (v : LitVal
                  -- TODO (bollu): We should be able to get the underlying UTF8 data and send it to LLVM.
                  -- TODO (bollu): do we need to quote the string for LLVM?
                  -- let str_global ← LLVM.buildGlobalString builder (quoteString v) "" -- (v.utf8ByteSiz)
+                 let zero ← LLVM.constIntUnsigned llvmctx 0
                  let str_global ← LLVM.buildGlobalString builder v "" -- (v.utf8ByteSiz)
                  -- access through the global, into the 0th index of the array
-                 let strPtr ← LLVM.buildLoad2 builder
+                 let strPtr ← LLVM.buildInBoundsGEP2 builder
                                 (← LLVM.opaquePointerTypeInContext llvmctx)
-                                str_global
+                                str_global #[zero] ""
                  let nbytes ← LLVM.constIntUnsigned llvmctx (UInt64.ofNat (v.utf8ByteSize))
                  callLeanMkStringFromBytesFn builder strPtr nbytes ""
   LLVM.buildStore builder zv zslot
