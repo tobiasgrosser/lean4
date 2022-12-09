@@ -370,6 +370,18 @@ extern "C" LEAN_EXPORT lean_object *lean_llvm_function_type(
 #endif  // LEAN_LLVM
 }
 
+extern "C" LEAN_EXPORT lean_object *lean_llvm_opaque_pointer_type_in_context(
+    size_t ctx, uint64_t addrspace, lean_object * /* w */) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    return lean_io_result_mk_ok(lean_box_usize(
+        Type_to_lean(LLVMPointerTypeInContext(lean_to_Context(ctx), addrspace))));
+#endif  // LEAN_LLVM
+}
+
 extern "C" LEAN_EXPORT lean_object *lean_llvm_int_type_in_context(
     size_t ctx, uint64_t width, lean_object * /* w */) {
 #ifndef LEAN_LLVM
@@ -623,13 +635,14 @@ extern "C" LEAN_EXPORT lean_object *lean_llvm_build_inbounds_gep2(size_t ctx,
         false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
                   "the LLVM backend function."));
 #else
-    printf("name: %10s | ty: %30s | value: %30s", name_ref.data(),
-		    LLVMPrintTypeToString(lean_to_Type(ty)),
-		    LLVMPrintValueToString(lean_to_Value(pointer)));
 
     lean::array_ref<lean_object *> indices_array_ref(indices, true);
     LLVMValueRef *indices_carr = array_ref_to_ArrayLLVMValue(indices_array_ref);
     lean::string_ref name_ref(name, true);
+
+    printf("name: %10s | ty: %30s | value: %30s\n", name_ref.data(),
+		    LLVMPrintTypeToString(lean_to_Type(ty)),
+		    LLVMPrintValueToString(lean_to_Value(pointer)));
 
     LLVMValueRef out = LLVMBuildInBoundsGEP2(
         lean_to_Builder(builder), lean_to_Type(ty), lean_to_Value(pointer), indices_carr,
