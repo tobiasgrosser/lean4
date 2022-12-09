@@ -1712,7 +1712,7 @@ def emitDeclInit (builder: LLVM.Builder llvmctx) (parentFn: LLVM.Value llvmctx) 
     -- emitLn "lean_dec_ref(res);"
     let world ← callLeanIOMkWorld builder
     let initRetTy := (← toLLVMType d.resultType)
-    let initArgTys := #[← LLVM.i8Type llvmctx, ← LLVM.voidPtrType llvmctx]
+    let initArgTys := #[← LLVM.voidPtrType llvmctx]
     let initf ← getOrCreateFunctionPrototype (← getLLVMModule) initRetTy (← toCName n)
                 initArgTys
     let initFnTy ← LLVM.functionType initRetTy initArgTys
@@ -1744,7 +1744,7 @@ def emitDeclInit (builder: LLVM.Builder llvmctx) (parentFn: LLVM.Value llvmctx) 
       -- vvfill in initvv
       LLVM.positionBuilderAtEnd builder initBB
       let dInitFnRetty ← toLLVMType d.resultType
-      let dInitFnArgTys := #[← LLVM.i8Type llvmctx, ← LLVM.voidPtrType llvmctx]
+      let dInitFnArgTys := #[← LLVM.voidPtrType llvmctx]
       let dInitFn ← getOrCreateFunctionPrototype (← getLLVMModule) dInitFnRetty (← toCName initFn)
         dInitFnArgTys
       let dInitFnTy ← LLVM.functionType dInitFnRetty dInitFnArgTys
