@@ -67,7 +67,7 @@ instance : Inhabited (M llvmctx α) where
   default := throw (Error.compileError "inhabitant")
 
 
-def addVartoState (x: VarId) (v: LLVM.Value llvmctx) (ty: LLVM.LLVMType llvmctx): M llvmctx Unit :=
+def addVartoState (x: VarId) (v: LLVM.Value llvmctx) (ty: LLVM.LLVMType llvmctx): M llvmctx Unit := do
   modify (fun s => { s with var2val := s.var2val.insert x (ty, v) }) -- add new variable
 
 def addJpTostate (jp: JoinPointId) (bb: LLVM.BasicBlock llvmctx): M llvmctx Unit :=
@@ -613,8 +613,7 @@ def emitCtorSetArgs (builder: LLVM.Builder llvmctx) (z : VarId) (ys : Array Arg)
 
 def emitCtor (builder: LLVM.Builder llvmctx) (z : VarId) (c : CtorInfo) (ys : Array Arg) : M llvmctx Unit := do
   debugPrint "emitCtor"
-  let (llvmty, slot) ← emitLhsSlot_ z;
-  addVartoState z slot llvmty
+  let (_llvmty, slot) ← emitLhsSlot_ z;
   if c.size == 0 && c.usize == 0 && c.ssize == 0 then do
     let v ← callLeanBox builder (← constIntUnsigned c.cidx) "lean_box_outv"
     let _ ← LLVM.buildStore builder v slot
@@ -1057,6 +1056,15 @@ def emitBox (builder: LLVM.Builder llvmctx) (z : VarId) (x : VarId) (xType: IRTy
   emitLhsSlotStore builder z zv
 
 
+def IRType.isIntegerType (t: IRType): Bool :=
+  match t with
+  | .uint8 => true
+  | .uint16 => true
+  | .uint32 => true
+  | .uint64 => true
+  | .usize => true
+  | _ => false
+
 def emitUnbox (builder: LLVM.Builder llvmctx) (z : VarId) (t : IRType) (x : VarId) (retName: String := ""): M llvmctx Unit := do
   let (fnName, retty) ←
      match t with
@@ -1069,9 +1077,15 @@ def emitUnbox (builder: LLVM.Builder llvmctx) (z : VarId) (t : IRType) (x : VarI
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let zval ← LLVM.buildCall2 builder fnty fn #[← emitLhsVal builder x] retName
+  IO.eprintln s!"***emitUnbox {z} {t} {x} {retName}¬"
+  IO.println s!"***emitUnbox {z} {t} {x} {retName}¬"
   -- TODO(bollu): note that lean_unbox only returns an i64, but we may need to truncate to
   -- smaller widths. see `phashmap` for an example of this occurring at calls to `lean_unbox`
-  let zval ← LLVM.buildSextOrTrunc builder zval (← toLLVMType t)
+  let zval ←
+    if IRType.isIntegerType t
+    then LLVM.buildSextOrTrunc builder zval (← toLLVMType t)
+    else pure zval
+    -- let zval ← LLVM.buildSextOrTrunc builder zval (← toLLVMType t)
   emitLhsSlotStore builder z zval
 
 
@@ -1593,17 +1607,22 @@ def emitDeclAux (d : Decl) : M llvmctx Unit := do
 -/
 
 
-def emitFnArgs (builder: LLVM.Builder llvmctx) (needsPackedArgs?: Bool)  (llvmfn: LLVM.Value llvmctx) (params: Array Param) : M llvmctx Unit := do
+def emitFnArgs (builder: LLVM.Builder llvmctx)
+  (needsPackedArgs?: Bool)  (llvmfn: LLVM.Value llvmctx) (params: Array Param) : M llvmctx Unit := do
   if needsPackedArgs? then do
       -- throw (Error.unimplemented "unimplemented > closureMaxArgs case")
       -- TODO: | change the cast to llvmFn to caller
+      IO.eprintln "emitFnArgs()"
       let argsp ← LLVM.getParam llvmfn 0 -- lean_object **args
       for i in List.range params.size do
-          -- let param := params[i]!
+          let param := params[i]!
+          -- argsi := (args + i)
           let argsi ← LLVM.buildGEP2 builder (← LLVM.voidPtrType llvmctx) argsp #[← constIntUnsigned i] s!"packed_arg_{i}_slot"
-          -- let pv ← LLVM.buildLoad2 builder (← toLLVMType param.ty) argsi
-          let pv ← LLVM.buildLoad2 builder (← LLVM.voidPtrType llvmctx) argsi
-          let llvmty ← LLVM.voidPtrType llvmctx
+          let llvmty ← toLLVMType param.ty
+          IO.eprintln s!"..packed args({i}): {param.x} {param.ty}"
+          -- pv := *(argsi) = *(args + i)
+          let pv ← LLVM.buildLoad2 builder llvmty argsi
+          -- slot for arg[i] which is always void* ? how did this ever fucking work?
           let alloca ← LLVM.buildAlloca builder llvmty s!"arg_{i}"
           LLVM.buildStore builder pv alloca
           addVartoState params[i]!.x alloca llvmty
