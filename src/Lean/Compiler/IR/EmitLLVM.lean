@@ -147,10 +147,14 @@ def getOrCreateLeanRefcountFn (kind: RefcountKind) (checkRef?: Bool) (size: Refc
 def callLeanRefcountFn (builder: LLVM.Builder llvmctx)
   (kind: RefcountKind) (ref?: Bool) (arg: LLVM.Value llvmctx)
   (delta: Option (LLVM.Value llvmctx) := Option.none): M llvmctx Unit := do
-  let fnty ← LLVM.functionType (← LLVM.voidType llvmctx) #[← LLVM.voidPtrType llvmctx, ← LLVM.size_tType llvmctx]
   match delta with
-  | .none => let _ ← LLVM.buildCall2 builder fnty (← getOrCreateLeanRefcountFn kind ref? RefcountDelta.one) #[arg] ""
-  | .some n => let _ ← LLVM.buildCall2 builder fnty (← getOrCreateLeanRefcountFn kind ref? RefcountDelta.n) #[arg, n] ""
+  | .none => do
+    -- since refcount δ is 1, we only supply the pointer.
+    let fnty ← LLVM.functionType (← LLVM.voidType llvmctx) #[← LLVM.voidPtrType llvmctx]
+    let _ ← LLVM.buildCall2 builder fnty (← getOrCreateLeanRefcountFn kind ref? RefcountDelta.one) #[arg] ""
+  | .some n => do
+    let fnty ← LLVM.functionType (← LLVM.voidType llvmctx) #[← LLVM.voidPtrType llvmctx, ← LLVM.size_tType llvmctx]
+    let _ ← LLVM.buildCall2 builder fnty (← getOrCreateLeanRefcountFn kind ref? RefcountDelta.n) #[arg, n] ""
 
 
 
@@ -256,18 +260,13 @@ def callLeanAllocCtor (builder: LLVM.Builder llvmctx) (tag num_objs scalar_sz: N
   LLVM.buildCall2 builder fnty fn #[tag, num_objs, scalar_sz] name
 
 -- `void lean_ctor_set(b_lean_obj_arg o, unsigned i, lean_obj_arg v)`
-def getOrCreateLeanCtorSetFn: M llvmctx (LLVM.Value llvmctx) := do
-  let unsigned ← LLVM.size_tType llvmctx
-  let voidptr ← LLVM.voidPtrType llvmctx
-  getOrCreateFunctionPrototype (← getLLVMModule)
-    (← LLVM.voidType llvmctx) "lean_ctor_set"  #[voidptr, unsigned, voidptr]
-
 -- TODO(bollu): remove name from this, since it returns void.
 def callLeanCtorSet (builder: LLVM.Builder llvmctx) (o i v: LLVM.Value llvmctx) (name: String := ""): M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_ctor_set"
   let retty ← LLVM.voidType llvmctx
   let voidptr ← LLVM.voidPtrType llvmctx
-  let argtys :=  #[voidptr, voidptr, voidptr]
+  let unsigned ← LLVM.size_tType llvmctx
+  let argtys :=  #[voidptr, unsigned, voidptr]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   LLVM.buildCall2 builder fnty fn  #[o, i, v] name
@@ -1954,7 +1953,7 @@ emitLn "
   -/
   let inty ← LLVM.i8Type llvmctx
   let inslot ← LLVM.buildAlloca builder (← LLVM.pointerType inty) "in"
-  let resty ← LLVM.i8Type llvmctx
+  let resty ← LLVM.voidPtrType llvmctx
   let res ← LLVM.buildAlloca builder (← LLVM.pointerType resty) "res"
   let initfn ← if usesLeanAPI then getOrCreateLeanInitialize mod else getOrCreateLeanInitializeRuntimeModule mod
   let initFnTy ← LLVM.functionType (← LLVM.voidType llvmctx) #[]
