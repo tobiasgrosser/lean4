@@ -1952,7 +1952,7 @@ emitLn "
   SetErrorMode(SEM_FAILCRITICALERRORS);
   #endif
   -/
-  let inty ← LLVM.i8Type llvmctx
+  let inty ← LLVM.voidPtrType llvmctx
   let inslot ← LLVM.buildAlloca builder (← LLVM.pointerType inty) "in"
   let resty ← LLVM.voidPtrType llvmctx
   let res ← LLVM.buildAlloca builder (← LLVM.pointerType resty) "res"
