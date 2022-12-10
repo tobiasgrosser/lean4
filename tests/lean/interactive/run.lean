@@ -10,7 +10,7 @@ namespace Client
 
 structure SubexprInfo where
   subexprPos : String
-  highlightColor? : Option String
+  diffStatus? : Option String
   deriving FromJson, Repr
 
 structure Hyp where
@@ -107,6 +107,16 @@ partial def main (args : List String) : IO Unit := do
           for diag in diags do
             IO.eprintln (toJson diag.param)
           requestNo := requestNo + 1
+        | "codeAction" =>
+          let params : CodeActionParams := {
+            textDocument := {uri := uri},
+            range := ⟨pos, pos⟩
+          }
+          Ipc.writeRequest ⟨requestNo, "textDocument/codeAction", params⟩
+          let r ← Ipc.readResponseAs requestNo (Array Json)
+          for x in r.result do
+            IO.eprintln x
+          requestNo := requestNo + 1
         | "goals" =>
           if rpcSessionId.isNone then
             Ipc.writeRequest ⟨requestNo, "$/lean/rpc/connect",  RpcConnectParams.mk uri⟩
@@ -178,8 +188,6 @@ partial def main (args : List String) : IO Unit := do
       | _ =>
         lastActualLineNo := lineNo
       lineNo := lineNo + 1
-    Ipc.writeRequest ⟨requestNo, "shutdown", Json.null⟩
-    let shutResp ← Ipc.readResponseAs requestNo Json
-    assert! shutResp.result.isNull
-    Ipc.writeNotification ⟨"exit", Json.null⟩
+
+    Ipc.shutdown requestNo
     discard <| Ipc.waitForExit

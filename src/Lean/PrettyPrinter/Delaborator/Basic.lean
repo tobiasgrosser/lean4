@@ -4,7 +4,6 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
 import Lean.Elab.Term
-import Lean.Elab.AuxDiscr
 import Lean.PrettyPrinter.Delaborator.Options
 import Lean.PrettyPrinter.Delaborator.SubExpr
 import Lean.PrettyPrinter.Delaborator.TopDownAnalyze
@@ -96,7 +95,7 @@ instance : MonadQuotation DelabM := {
 
 unsafe def mkDelabAttribute : IO (KeyedDeclsAttribute Delab) :=
   KeyedDeclsAttribute.init {
-    builtinName := `builtinDelab,
+    builtinName := `builtin_delab,
     name := `delab,
     descr    := "Register a delaborator.
 
@@ -107,8 +106,16 @@ unsafe def mkDelabAttribute : IO (KeyedDeclsAttribute Delab) :=
   to reduce special casing. If the term is an `Expr.mdata` with a single key `k`, `mdata.k`
   is tried first.",
     valueTypeName := `Lean.PrettyPrinter.Delaborator.Delab
+    evalKey := fun _ stx => do
+      let stx ← Attribute.Builtin.getIdent stx
+      let kind := stx.getId
+      if (← Elab.getInfoState).enabled && kind.getRoot == `app then
+        let c := kind.replacePrefix `app .anonymous
+        if (← getEnv).contains c then
+          Elab.addConstInfo stx c none
+      pure kind
   } `Lean.PrettyPrinter.Delaborator.delabAttribute
-@[builtinInit mkDelabAttribute] opaque delabAttribute : KeyedDeclsAttribute Delab
+@[builtin_init mkDelabAttribute] opaque delabAttribute : KeyedDeclsAttribute Delab
 
 def getExprKind : DelabM Name := do
   let e ← getExpr
@@ -171,7 +178,7 @@ def getUnusedName (suggestion : Name) (body : Expr) : DelabM Name := do
   -- Use a nicer binder name than `[anonymous]`. We probably shouldn't do this in all LocalContext use cases, so do it here.
   let suggestion := if suggestion.isAnonymous then `a else suggestion
   -- We use this small hack to convert identifiers created using `mkAuxFunDiscr` to simple names
-  let suggestion := if isAuxFunDiscrName suggestion then `x else suggestion.eraseMacroScopes
+  let suggestion := suggestion.eraseMacroScopes
   let lctx ← getLCtx
   if !lctx.usesUserName suggestion then
     return suggestion
@@ -254,17 +261,17 @@ partial def delab : Delab := do
 
 unsafe def mkAppUnexpanderAttribute : IO (KeyedDeclsAttribute Unexpander) :=
   KeyedDeclsAttribute.init {
-    name  := `appUnexpander,
+    name  := `app_unexpander,
     descr := "Register an unexpander for applications of a given constant.
 
-[appUnexpander c] registers a `Lean.PrettyPrinter.Unexpander` for applications of the constant `c`. The unexpander is
+[app_unexpander c] registers a `Lean.PrettyPrinter.Unexpander` for applications of the constant `c`. The unexpander is
 passed the result of pre-pretty printing the application *without* implicitly passed arguments. If `pp.explicit` is set
 to true or `pp.notation` is set to false, it will not be called at all.",
     valueTypeName := `Lean.PrettyPrinter.Unexpander
     evalKey := fun _ stx => do
-      resolveGlobalConstNoOverloadCore (← Attribute.Builtin.getId stx)
+      Elab.resolveGlobalConstNoOverloadWithInfo (← Attribute.Builtin.getIdent stx)
   } `Lean.PrettyPrinter.Delaborator.appUnexpanderAttribute
-@[builtinInit mkAppUnexpanderAttribute] opaque appUnexpanderAttribute : KeyedDeclsAttribute Unexpander
+@[builtin_init mkAppUnexpanderAttribute] opaque appUnexpanderAttribute : KeyedDeclsAttribute Unexpander
 
 end Delaborator
 

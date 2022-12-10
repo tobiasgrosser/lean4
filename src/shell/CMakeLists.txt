@@ -16,7 +16,7 @@ if(LLVM)
   else()
     set(LLVM_SYSTEM_LIBS "-lz")
   endif()
-  if(${STATIC} AND NOT ("${CMAKE_SYSTEM_NAME}" MATCHES "Darwin"))
+  if(NOT ("${CMAKE_SYSTEM_NAME}" MATCHES "Darwin"))
     string(APPEND LEAN_EXE_LINKER_FLAGS " `llvm-config --link-static --ldflags --libs nativecodegen` -Wl,-Bstatic ${LLVM_SYSTEM_LIBS} -Wl,-Bdynamic")
   else()
     string(APPEND LEAN_EXE_LINKER_FLAGS " `llvm-config --ldflags --libs nativecodegen` ${LLVM_SYSTEM_LIBS}")
@@ -31,6 +31,13 @@ add_custom_target(lean ALL
   DEPENDS leanshared shell
   COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make lean LEAN_SHELL="$<TARGET_OBJECTS:shell>"
   COMMAND_EXPAND_LISTS)
+
+# if we have LLVM enabled, then build `libruntime.bc` which has the LLVM bitcode
+# of Lean runtime to be built.
+if (LLVM)
+   add_dependencies(lean runtime_bc)
+endif()
+
 
 # use executable of current stage for tests
 string(REGEX REPLACE "^([a-zA-Z]):" "/\\1" LEAN_BIN "${CMAKE_BINARY_DIR}/bin")

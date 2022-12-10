@@ -6,88 +6,11 @@ Authors: Henrik Böving
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.PassManager
 import Lean.Compiler.LCNF.PullFunDecls
+import Lean.Compiler.LCNF.FVarUtil
+import Lean.Compiler.LCNF.ScopeM
+import Lean.Compiler.LCNF.InferType
 
 namespace Lean.Compiler.LCNF
-
--- TODO: These can be used in a much more general context
-partial def mapFVarM [Monad m] (f : FVarId → m FVarId) (e : Expr) : m Expr := do
-  match e with
-  | .proj typ idx struct => return .proj typ idx (←mapFVarM f struct)
-  | .app fn arg => return .app (←mapFVarM f fn) (←mapFVarM f arg)
-  | .fvar fvarId => return .fvar (←f fvarId)
-  | .lam arg ty body bi =>
-    return .lam arg (←mapFVarM f ty) (←mapFVarM f body) bi
-  | .forallE arg ty body bi =>
-    return .forallE arg (←mapFVarM f ty) (←mapFVarM f body) bi
-  | .letE var ty value body nonDep  =>
-    return .letE var (←mapFVarM f ty) (←mapFVarM f value) (←mapFVarM f body) nonDep
-  | .bvar .. | .sort .. => return e
-  | .mdata .. | .const .. | .lit .. => return e
-  | .mvar .. => unreachable!
-
-partial def forFVarM [Monad m] (f : FVarId → m Unit) (e : Expr) : m Unit := do
-  match e with
-  | .proj _ _ struct => forFVarM f struct
-  | .app fn arg =>
-    forFVarM f fn
-    forFVarM f arg
-  | .fvar fvarId => f fvarId
-  | .lam _ ty body .. =>
-    forFVarM f ty
-    forFVarM f body
-  | .forallE _ ty body .. =>
-    forFVarM f ty
-    forFVarM f body
-  | .letE _ ty value body ..  =>
-    forFVarM f ty
-    forFVarM f value
-    forFVarM f body
-  | .bvar .. | .sort .. => return
-  | .mdata .. | .const .. | .lit .. => return
-  | .mvar .. => unreachable!
-
-/--
-A general abstraction for the idea of a scope in the compiler.
--/
-abbrev ScopeM := StateRefT FVarIdSet CompilerM
-
-namespace ScopeM
-
-def getScope : ScopeM FVarIdSet := get
-def setScope (newScope : FVarIdSet) : ScopeM Unit := set newScope
-def clearScope : ScopeM Unit := setScope {}
-
-/--
-Execute `x` but recover the previous scope after doing so.
--/
-def withBackTrackingScope [MonadLiftT ScopeM m] [Monad m] [MonadFinally m] (x : m α) : m α := do
-  let scope ← getScope
-  try x finally setScope scope
-
-/--
-Clear the current scope for the monadic action `x`, afterwards continuing
-with the old one.
--/
-def withNewScope [MonadLiftT ScopeM m] [Monad m] [MonadFinally m] (x : m α) : m α := do
-  withBackTrackingScope do
-    clearScope
-    x
-
-/--
-Check whether `fvarId` is in the current scope, that is, was declared within
-the current `fun` declaration that is being processed.
--/
-def isInScope (fvarId : FVarId) : ScopeM Bool := do
-  let scope ← getScope
-  return scope.contains fvarId
-
-/--
-Add a new `FVarId` to the current scope.
--/
-def addToScope (fvarId : FVarId) : ScopeM Unit :=
-  modify fun scope => scope.insert fvarId
-
-end ScopeM
 
 namespace JoinPointFinder
 
@@ -149,9 +72,15 @@ private def modifyCandidates (f : HashMap FVarId CandidateInfo → HashMap FVarI
   modify (fun state => {state with candidates := f state.candidates })
 
 /--
-Remove all join point candidates contained in `e`.
+Remove all join point candidates contained in `a`.
 -/
-private partial def removeCandidatesContainedIn (e : Expr) : FindM Unit := do
+private partial def removeCandidatesInArg (a : Arg) : FindM Unit := do
+  forFVarM eraseCandidate a
+
+/--
+Remove all join point candidates contained in `a`.
+-/
+private partial def removeCandidatesInLetValue (e : LetValue) : FindM Unit := do
   forFVarM eraseCandidate e
 
 /--
@@ -208,21 +137,21 @@ partial def find (decl : Decl) : CompilerM FindState := do
 where
   go : Code → FindM Unit
   | .let decl k => do
-    match k, decl.value, decl.value.getAppFn with
-    | .return valId, .app .., .fvar fvarId =>
-      decl.value.getAppArgs.forM removeCandidatesContainedIn
+    match k, decl.value with
+    | .return valId, .fvar fvarId args =>
+      args.forM removeCandidatesInArg
       if let some candidateInfo ← findCandidate? fvarId then
         -- Erase candidate that are not fully applied or applied outside of tail position
-        if valId != decl.fvarId || decl.value.getAppNumArgs != candidateInfo.arity then
+        if valId != decl.fvarId || args.size != candidateInfo.arity then
           eraseCandidate fvarId
         -- Out of scope join point candidate handling
         else if let some upperCandidate ← read then
-          if !(←isInScope fvarId) then
+          if !(← isInScope fvarId) then
             addDependency fvarId upperCandidate
       else
         eraseCandidate fvarId
-    | _, _, _ =>
-      removeCandidatesContainedIn decl.value
+    | _, _ =>
+      removeCandidatesInLetValue decl.value
       go k
   | .fun decl k => do
     withReader (fun _ => some decl.fvarId) do
@@ -234,7 +163,7 @@ where
   | .jp decl k => do
     go decl.value
     go k
-  | .jmp _ args => args.forM removeCandidatesContainedIn
+  | .jmp _ args => args.forM removeCandidatesInArg
   | .return val => eraseCandidate val
   | .cases c => do
     eraseCandidate c.discr
@@ -246,7 +175,7 @@ Replace all join point candidate `fun` declarations with `jp` ones
 and all calls to them with `jmp`s.
 -/
 partial def replace (decl : Decl) (state : FindState) : CompilerM Decl := do
-  let mapper := fun acc cname _ => do return acc.insert cname (←mkFreshJpName)
+  let mapper := fun acc cname _ => do return acc.insert cname (← mkFreshJpName)
   let replaceCtx : ReplaceCtx ← state.candidates.foldM (init := .empty) mapper
   let newValue ← go decl.value |>.run replaceCtx
   return { decl with value := newValue }
@@ -254,33 +183,33 @@ where
   go (code : Code) : ReplaceM Code := do
     match code with
     | .let decl k =>
-      match k, decl.value, decl.value.getAppFn with
-      | .return valId, .app .., (.fvar fvarId) =>
+      match k, decl.value with
+      | .return valId, .fvar fvarId args =>
         if valId == decl.fvarId then
           if (← read).contains fvarId then
             eraseLetDecl decl
-            return .jmp fvarId decl.value.getAppArgs
+            return .jmp fvarId args
           else
             return code
         else
           return code
-      | _, _, _ => return Code.updateLet! code decl (←go k)
+      | _, _ => return Code.updateLet! code decl (← go k)
     | .fun decl k =>
       if let some replacement := (← read).find? decl.fvarId then
         let newDecl := { decl with
           binderName := replacement,
-          value := (←go decl.value)
+          value := (← go decl.value)
         }
         modifyLCtx fun lctx => lctx.addFunDecl newDecl
-        return .jp newDecl (←go k)
+        return .jp newDecl (← go k)
       else
-        let newDecl ← decl.updateValue (←go decl.value)
-        return Code.updateFun! code newDecl (←go k)
+        let newDecl ← decl.updateValue (← go decl.value)
+        return Code.updateFun! code newDecl (← go k)
     | .jp decl k =>
-       let newDecl ← decl.updateValue (←go decl.value)
-       return Code.updateFun! code newDecl (←go k)
+       let newDecl ← decl.updateValue (← go decl.value)
+       return Code.updateFun! code newDecl (← go k)
     | .cases cs =>
-      return Code.updateCases! code cs.resultType cs.discr (←cs.alts.mapM (·.mapCodeM go))
+      return Code.updateCases! code cs.resultType cs.discr (← cs.alts.mapM (·.mapCodeM go))
     | .jmp .. | .return .. | .unreach .. =>
       return code
 
@@ -330,9 +259,9 @@ Replace a free variable if necessary, that is:
 otherwise just return `fvar`.
 -/
 def replaceFVar (fvar : FVarId) : ExtendM FVarId := do
-  if (←read).candidates.contains fvar then
-    if let some currentJp := (←read).currentJp? then
-      if let some replacement := (←get).fvarMap.find! currentJp |>.find? fvar then
+  if (← read).candidates.contains fvar then
+    if let some currentJp := (← read).currentJp? then
+      if let some replacement := (← get).fvarMap.find! currentJp |>.find? fvar then
         return replacement.fvarId
   return fvar
 
@@ -342,7 +271,7 @@ if we are currently within a join point. Then execute `x`.
 -/
 def withNewCandidate (fvar : FVarId) (x : ExtendM α) : ExtendM α := do
   addToScope fvar
-  if (←read).currentJp?.isSome then
+  if (← read).currentJp?.isSome then
     withReader (fun ctx => { ctx with candidates := ctx.candidates.insert fvar }) do
       x
   else
@@ -352,9 +281,11 @@ def withNewCandidate (fvar : FVarId) (x : ExtendM α) : ExtendM α := do
 Same as `withNewCandidate` but with multiple `FVarId`s.
 -/
 def withNewCandidates (fvars : Array FVarId) (x : ExtendM α) : ExtendM α := do
-  if (←read).currentJp?.isSome then
-    let candidates := (←read).candidates
-    let folder := (fun acc val => do addToScope val; return acc.insert val)
+  if (← read).currentJp?.isSome then
+    let candidates := (← read).candidates
+    let folder (acc : FVarIdSet) (val : FVarId) := do
+      addToScope val
+      return acc.insert val
     let newCandidates ← fvars.foldlM (init := candidates) folder
     withReader (fun ctx => { ctx with candidates := newCandidates }) do
       x
@@ -380,10 +311,10 @@ This is necessary if:
   cannot lift a join point outside of a local function declaration.
 -/
 def extendByIfNecessary (fvar : FVarId) : ExtendM Unit := do
-  if let some currentJp := (←read).currentJp? then
-    let mut translator := (←get).fvarMap.find! currentJp
-    let candidates := (←read).candidates
-    if !(←isInScope fvar) && !translator.contains fvar && candidates.contains fvar then
+  if let some currentJp := (← read).currentJp? then
+    let mut translator := (← get).fvarMap.find! currentJp
+    let candidates := (← read).candidates
+    if !(← isInScope fvar) && !translator.contains fvar && candidates.contains fvar then
       let typ ← getType fvar
       let newParam ← mkAuxParam typ
       translator := translator.insert fvar newParam
@@ -404,8 +335,8 @@ as well because we need to drag these variables through at the call sites
 of `j.2` in `j.1`.
 -/
 def mergeJpContextIfNecessary (jp : FVarId) : ExtendM Unit := do
-  if (←read).currentJp?.isSome then
-    let additionalArgs := (←get).fvarMap.find! jp |>.toArray
+  if (← read).currentJp?.isSome then
+    let additionalArgs := (← get).fvarMap.find! jp |>.toArray
     for (fvar, _) in additionalArgs do
       extendByIfNecessary fvar
 
@@ -461,31 +392,29 @@ partial def extend (decl : Decl) : CompilerM Decl := do
   let decl := { decl with value := newValue }
   decl.pullFunDecls
 where
-  goExpr (e : Expr) : ExtendM Expr :=
-    let visitor := fun fvar => do
-      extendByIfNecessary fvar
-      replaceFVar fvar
-    mapFVarM visitor e
+  goFVar (fvar : FVarId) : ExtendM FVarId := do
+    extendByIfNecessary fvar
+    replaceFVar fvar
   go (code : Code) : ExtendM Code := do
     match code with
     | .let decl k =>
-      let decl ← decl.updateValue (←goExpr decl.value)
+      let decl ← decl.updateValue (← mapFVarM goFVar decl.value)
       withNewCandidate decl.fvarId do
-        return Code.updateLet! code decl (←go k)
+        return Code.updateLet! code decl (← go k)
     | .jp decl k =>
       let decl ← withNewJpScope decl do
         let value ← go decl.value
-        let additionalParams := (←get).fvarMap.find! decl.fvarId |>.toArray |>.map Prod.snd
+        let additionalParams := (← get).fvarMap.find! decl.fvarId |>.toArray |>.map Prod.snd
         let newType := additionalParams.foldr (init := decl.type) (fun val acc => .forallE val.binderName val.type acc .default)
         decl.update newType (additionalParams ++ decl.params) value
       mergeJpContextIfNecessary decl.fvarId
       withNewCandidate decl.fvarId do
-        return Code.updateFun! code decl (←go k)
+        return Code.updateFun! code decl (← go k)
     | .fun decl k =>
       let decl ← withNewFunScope decl do
-        decl.updateValue (←go decl.value)
+        decl.updateValue (← go decl.value)
       withNewCandidate decl.fvarId do
-        return Code.updateFun! code decl (←go k)
+        return Code.updateFun! code decl (← go k)
     | .cases cs =>
       extendByIfNecessary cs.discr
       let discr ← replaceFVar cs.discr
@@ -495,25 +424,180 @@ where
       let alts ← cs.alts.mapM visitor
       return Code.updateCases! code cs.resultType discr alts
     | .jmp fn args =>
-      let mut newArgs ← args.mapM goExpr
-      let additionalArgs := (←get).fvarMap.find! fn |>.toArray |>.map Prod.fst
-      if let some currentJp := (←read).currentJp? then
-        let translator := (←get).fvarMap.find! currentJp
-        let f := fun arg =>
-          if let some translated := translator.find? arg then
-            .fvar translated.fvarId
-          else
-            .fvar arg
-        newArgs := (additionalArgs.map f) ++ newArgs
+      let mut newArgs ← args.mapM (mapFVarM goFVar)
+      let additionalArgs := (← get).fvarMap.find! fn |>.toArray |>.map Prod.fst
+      if let some _currentJp := (← read).currentJp? then
+        let f := fun arg => do
+          return .fvar (← goFVar arg)
+        newArgs := (←additionalArgs.mapM f) ++ newArgs
       else
         newArgs := (additionalArgs.map .fvar) ++ newArgs
       return Code.updateJmp! code fn newArgs
     | .return var =>
       extendByIfNecessary var
-      return Code.updateReturn! code (←replaceFVar var)
+      return Code.updateReturn! code (← replaceFVar var)
     | .unreach .. => return code
 
 end JoinPointContextExtender
+
+namespace JoinPointCommonArgs
+
+/--
+Context for `ReduceAnalysisM`.
+-/
+structure AnalysisCtx where
+  /--
+  The variables that are in scope at the time of the definition of
+  the join point.
+  -/
+  jpScopes : FVarIdMap FVarIdSet := {}
+
+/--
+State for `ReduceAnalysisM`.
+-/
+structure AnalysisState where
+  /--
+  A map, that for each join point id contains a map from all (so far)
+  duplicated argument ids to the respective duplicate value
+  -/
+  jpJmpArgs : FVarIdMap FVarSubst := {}
+
+abbrev ReduceAnalysisM := ReaderT AnalysisCtx StateRefT AnalysisState ScopeM
+abbrev ReduceActionM := ReaderT AnalysisState CompilerM
+
+def isInJpScope (jp : FVarId) (var : FVarId) : ReduceAnalysisM Bool := do
+  return (← read).jpScopes.find! jp |>.contains var
+
+open ScopeM
+
+/--
+Take a look at each join point and each of their call sites. If all
+call sites of a join point have one or more arguments in common, for example:
+```
+jp _jp.1 a b c => ...
+...
+cases foo
+| n1 => jmp _jp.1 d e f
+| n2 => jmp _jp.1 g e h
+```
+We can get rid of the common argument in favour of inlining it directly
+into the join point (in this case the `e`). This reduces the amount of
+arguments we have to pass around drastically for example in `ReaderT` based
+monad stacks.
+
+Note 1: This transformation can in certain niche cases obtain better results.
+For example:
+```
+jp foo a b => ..
+let x := ...
+cases discr
+| n1 => jmp foo x y
+| n2 => jmp foo x z
+```
+Here we will not collapse the `x` since it is defined after the join point `foo`
+and thus not accessible for substitution yet. We could however reorder the code in
+such a way that this is possible, this is currently not done since we observe
+than in praxis most of the applications of this transformation can occur naturally
+without reordering.
+
+Note 2: This transformation is kind of the opposite of `JoinPointContextExtender`.
+However we still benefit from the extender because in the `simp` run after it
+we might be able to pull join point declarations further up in the hierarchy
+of nested functions/join points which in turn might enable additional optimizations.
+After we have performed all of these optimizations we can take away the
+(remaining) common arguments and end up with nicely floated and optimized
+code that has as little arguments as possible in the join points.
+-/
+partial def reduce (decl : Decl) : CompilerM Decl := do
+  let (_, analysis) ← goAnalyze decl.value |>.run {} |>.run {} |>.run' {}
+  let newValue ← goReduce decl.value |>.run analysis
+  return { decl with value := newValue }
+where
+  goAnalyzeFunDecl (fn : FunDecl) : ReduceAnalysisM Unit := do
+    withNewScope do
+      fn.params.forM (addToScope ·.fvarId)
+      goAnalyze fn.value
+
+  goAnalyze (code : Code) : ReduceAnalysisM Unit := do
+    match code with
+    | .let decl k =>
+      addToScope decl.fvarId
+      goAnalyze k
+    | .jp decl k =>
+      goAnalyzeFunDecl decl
+      let scope ← getScope
+      withReader (fun ctx => { ctx with jpScopes := ctx.jpScopes.insert decl.fvarId scope }) do
+        addToScope decl.fvarId
+        goAnalyze k
+    | .fun decl k =>
+      goAnalyzeFunDecl decl
+      addToScope decl.fvarId
+      goAnalyze k
+    | .cases cs =>
+      let visitor alt := do
+        withNewScope do
+          alt.getParams.forM (addToScope ·.fvarId)
+          goAnalyze alt.getCode
+      cs.alts.forM visitor
+    | .jmp fn args =>
+      let decl ← getFunDecl fn
+      if let some knownArgs := (← get).jpJmpArgs.find? fn then
+        let mut newArgs := knownArgs
+        for (param, arg) in decl.params.zip args do
+          if let some knownVal := newArgs.find? param.fvarId then
+            if arg.toExpr != knownVal then
+              newArgs := newArgs.erase param.fvarId
+        modify fun s => { s with jpJmpArgs := s.jpJmpArgs.insert fn newArgs }
+      else
+        let folder := fun acc (param, arg) => do
+          if (← allFVarM (isInJpScope fn) arg) then
+            return acc.insert param.fvarId arg.toExpr
+          else
+            return acc
+        let interestingArgs ← decl.params.zip args |>.foldlM (init := {}) folder
+        modify fun s => { s with jpJmpArgs := s.jpJmpArgs.insert fn interestingArgs }
+    | .return .. | .unreach .. => return ()
+
+  goReduce (code : Code) : ReduceActionM Code := do
+    match code with
+    | .jp decl k =>
+      if let some reducibleArgs := (← read).jpJmpArgs.find? decl.fvarId then
+        let filter param := do
+          let erasable := reducibleArgs.contains param.fvarId
+          if erasable then
+            eraseParam param
+          return !erasable
+        let newParams ← decl.params.filterM filter
+        let mut newValue ← goReduce decl.value
+        newValue ← replaceFVars newValue reducibleArgs false
+        let newType ←
+          if newParams.size != decl.params.size then
+            mkForallParams newParams (← newValue.inferType)
+          else
+            pure decl.type
+        let k ← goReduce k
+        let decl ← decl.update newType newParams newValue
+        return Code.updateFun! code decl k
+      else
+        return Code.updateFun! code decl (← goReduce k)
+    | .jmp fn args =>
+      let reducibleArgs := (← read).jpJmpArgs.find! fn
+      let decl ← getFunDecl fn
+      let newParams := decl.params.zip args
+        |>.filter (!reducibleArgs.contains ·.fst.fvarId)
+        |>.map Prod.snd
+      return Code.updateJmp! code fn newParams
+    | .let decl k =>
+      return Code.updateLet! code decl (← goReduce k)
+    | .fun decl k =>
+      let decl ← decl.updateValue (← goReduce decl.value)
+      return Code.updateFun! code decl (← goReduce k)
+    | .cases cs =>
+      let alts ← cs.alts.mapM (·.mapCodeM goReduce)
+      return Code.updateCases! code cs.resultType cs.discr alts
+    | .return .. | .unreach .. => return code
+
+end JoinPointCommonArgs
 
 /--
 Find all `fun` declarations in `decl` that qualify as join points then replace
@@ -521,7 +605,7 @@ their definitions and call sites with `jp`/`jmp`.
 -/
 def Decl.findJoinPoints (decl : Decl) : CompilerM Decl := do
   let findResult ← JoinPointFinder.find decl
-  trace[Compiler.findJoinPoints] s!"Found: {findResult.candidates.size} jp candidates"
+  trace[Compiler.findJoinPoints] "Found: {findResult.candidates.size} jp candidates"
   JoinPointFinder.replace decl findResult
 
 def findJoinPoints : Pass :=
@@ -533,10 +617,19 @@ builtin_initialize
 def Decl.extendJoinPointContext (decl : Decl) : CompilerM Decl := do
   JoinPointContextExtender.extend decl
 
-def extendJoinPointContext : Pass :=
-  .mkPerDeclaration `extendJoinPointContext Decl.extendJoinPointContext .base
+def extendJoinPointContext (occurrence : Nat := 0) (phase := Phase.mono) (_h : phase ≠ .base := by simp): Pass :=
+  .mkPerDeclaration `extendJoinPointContext Decl.extendJoinPointContext phase (occurrence := occurrence)
 
 builtin_initialize
   registerTraceClass `Compiler.extendJoinPointContext (inherited := true)
+
+def Decl.commonJoinPointArgs (decl : Decl) : CompilerM Decl := do
+  JoinPointCommonArgs.reduce decl
+
+def commonJoinPointArgs : Pass :=
+  .mkPerDeclaration `commonJoinPointArgs Decl.commonJoinPointArgs .mono
+
+builtin_initialize
+  registerTraceClass `Compiler.commonJoinPointArgs (inherited := true)
 
 end Lean.Compiler.LCNF

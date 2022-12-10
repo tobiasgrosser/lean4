@@ -18,7 +18,7 @@ namespace Lean.Compiler.LCNF
 We do not generate code for `declName` if
 - Its type is a proposition.
 - Its type is a type former.
-- It is tagged as `[macroInline]`.
+- It is tagged as `[macro_inline]`.
 - It is a type class instance.
 
 Remark: we still generate code for declarations tagged as `[inline]`
@@ -29,6 +29,7 @@ def shouldGenerateCode (declName : Name) : CoreM Bool := do
   let some info ← getDeclInfo? declName | return false
   unless info.hasValue do return false
   let env ← getEnv
+  if isExtern env declName then return false
   if hasMacroInlineAttribute env declName then return false
   if (← Meta.isMatcher declName) then return false
   if isCasesOnRecursor env declName then return false
@@ -71,13 +72,13 @@ def run (declNames : Array Name) : CompilerM (Array Decl) := withAtLeastMaxRecDe
   decls := markRecDecls decls
   let manager ← getPassManager
   for pass in manager.passes do
-    trace[Compiler] s!"Running pass: {pass.name}"
+    trace[Compiler] "Running pass: {pass.name}"
     decls ← withPhase pass.phase <| pass.run decls
-    withPhase pass.phase <| checkpoint pass.name decls
+    withPhase pass.phaseOut <| checkpoint pass.name decls
   if (← Lean.isTracingEnabledFor `Compiler.result) then
     for decl in decls do
       -- We display the declaration saved in the environment because the names have been normalized
-      let some decl' ← getDeclAt? decl.name .base | unreachable!
+      let some decl' ← getDeclAt? decl.name .mono | unreachable!
       Lean.addTrace `Compiler.result m!"size: {decl.size}\n{← ppDecl' decl'}"
   return decls
 

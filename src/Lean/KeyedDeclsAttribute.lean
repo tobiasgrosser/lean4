@@ -27,15 +27,20 @@ abbrev Key := Name
 
  Important: `mkConst valueTypeName` and `γ` must be definitionally equal. -/
 structure Def (γ : Type) where
-  /-- Builtin attribute name, if any (e.g., `builtinTermElab) -/
+  /-- Builtin attribute name, if any (e.g., `builtin_term_elab) -/
   builtinName   : Name := Name.anonymous
-  /-- Attribute name (e.g., `termElab) -/
+  /-- Attribute name (e.g., `term_elab) -/
   name          : Name
   /-- Attribute description -/
   descr         : String
   valueTypeName : Name
   /-- Convert `Syntax` into a `Key`, the default implementation expects an identifier. -/
-  evalKey (builtin : Bool) (stx : Syntax) : AttrM Key := Attribute.Builtin.getId stx
+  evalKey (builtin : Bool) (stx : Syntax) : AttrM Key := do
+    let stx ← Attribute.Builtin.getIdent stx
+    let kind := stx.getId
+    if (← getEnv).contains kind && (← Elab.getInfoState).enabled then
+      Elab.addConstInfo stx kind none
+    pure kind
   onAdded (builtin : Bool) (declName : Name) : AttrM Unit := pure ()
   deriving Inhabited
 
@@ -100,10 +105,10 @@ def ExtensionState.erase (s : ExtensionState γ) (attrName : Name) (declName : N
     throwError "'{declName}' does not have [{attrName}] attribute"
   return { s with erased := s.erased.insert declName, declNames := s.declNames.erase declName }
 
-protected unsafe def init {γ} (df : Def γ) (attrDeclName : Name) : IO (KeyedDeclsAttribute γ) := do
+protected unsafe def init {γ} (df : Def γ) (attrDeclName : Name := by exact decl_name%) : IO (KeyedDeclsAttribute γ) := do
   let tableRef ← IO.mkRef ({} : Table γ)
   let ext : Extension γ ← registerScopedEnvExtension {
-    name         := df.name
+    name         := attrDeclName
     mkInitial    := return mkStateOfTable (← tableRef.get)
     ofOLeanEntry := fun _ entry => do
       let ctx ← read
@@ -127,7 +132,7 @@ protected unsafe def init {γ} (df : Def γ) (attrDeclName : Name) : IO (KeyedDe
           if c != df.valueTypeName then throwError "unexpected type at '{declName}', '{df.valueTypeName}' expected"
           else
             /- builtin_initialize @addBuiltin $(mkConst valueTypeName) $(mkConst attrDeclName) $(key) $(declName) $(mkConst declName) -/
-            let val := mkAppN (mkConst `Lean.KeyedDeclsAttribute.addBuiltin) #[mkConst df.valueTypeName, mkConst attrDeclName, toExpr key, toExpr declName, mkConst declName]
+            let val := mkAppN (mkConst ``addBuiltin) #[mkConst df.valueTypeName, mkConst attrDeclName, toExpr key, toExpr declName, mkConst declName]
             declareBuiltin declName val
             df.onAdded true declName
         | _ => throwError "unexpected type at '{declName}', '{df.valueTypeName}' expected"

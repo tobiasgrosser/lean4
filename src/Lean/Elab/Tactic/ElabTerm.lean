@@ -58,7 +58,7 @@ def filterOldMVars (mvarIds : Array MVarId) (mvarCounterSaved : Nat) : MetaM (Ar
   let mctx ← getMCtx
   return mvarIds.filter fun mvarId => (mctx.getDecl mvarId |>.index) >= mvarCounterSaved
 
-@[builtinTactic «exact»] def evalExact : Tactic := fun stx =>
+@[builtin_tactic «exact»] def evalExact : Tactic := fun stx =>
   match stx with
   | `(tactic| exact $e) => closeMainGoalUsing (checkUnassigned := false) fun type => do
     let mvarCounterSaved := (← getMCtx).mvarCounter
@@ -83,29 +83,58 @@ def sortMVarIdsByIndex [MonadMCtx m] [Monad m] (mvarIds : List MVarId) : m (List
 /--
   Execute `k`, and collect new "holes" in the resulting expression.
 -/
-def withCollectingNewGoalsFrom (k : TacticM Expr) (tagSuffix : Name) (allowNaturalHoles := false) : TacticM (Expr × List MVarId) := do
-  let mvarCounterSaved := (← getMCtx).mvarCounter
-  let val ← k
-  let newMVarIds ← getMVarsNoDelayed val
-  /- ignore let-rec auxiliary variables, they are synthesized automatically later -/
-  let newMVarIds ← newMVarIds.filterM fun mvarId => return !(← Term.isLetRecAuxMVar mvarId)
-  let newMVarIds ← if allowNaturalHoles then
-    pure newMVarIds.toList
-  else
-    let naturalMVarIds ← newMVarIds.filterM fun mvarId => return (← mvarId.getKind).isNatural
-    let syntheticMVarIds ← newMVarIds.filterM fun mvarId => return !(← mvarId.getKind).isNatural
-    let naturalMVarIds ← filterOldMVars naturalMVarIds mvarCounterSaved
-    logUnassignedAndAbort naturalMVarIds
-    pure syntheticMVarIds.toList
+def withCollectingNewGoalsFrom (k : TacticM Expr) (tagSuffix : Name) (allowNaturalHoles := false) : TacticM (Expr × List MVarId) :=
   /-
-  We sort the new metavariable ids by index to ensure the new goals are ordered using the order the metavariables have been created.
-  See issue #1682.
-  Potential problem: if elaboration of subterms is delayed the order the new metavariables are created may not match the order they
-  appear in the `.lean` file. We should tell users to prefer tagged goals.
+  When `allowNaturalHoles = true`, unassigned holes should become new metavariables, including `_`s.
+  Thus, we set `holesAsSynthethicOpaque` to true if it is not already set to `true`.
+  See issue #1681. We have the tactic
+  ```
+  `refine' (fun x => _)
+  ```
+  If we create a natural metavariable `?m` for `_` with type `Nat`, then when we try to abstract `x`,
+  a new metavariable `?n` with type `Nat -> Nat` is created, and we assign `?m := ?n x`,
+  and the resulting term is `fun x => ?n x`. Then, `getMVarsNoDelayed` would return `?n` as a new goal
+  which would be confusing since it has type `Nat -> Nat`.
   -/
-  let newMVarIds ← sortMVarIdsByIndex newMVarIds
-  tagUntaggedGoals (← getMainTag) tagSuffix newMVarIds
-  return (val, newMVarIds)
+  if allowNaturalHoles then
+    withTheReader Term.Context (fun ctx => { ctx with holesAsSyntheticOpaque := ctx.holesAsSyntheticOpaque || allowNaturalHoles }) do
+      /-
+      We also enable the assignment of synthetic metavariables, otherwise we will fail to
+      elaborate terms such as `f _ x` where `f : (α : Type) → α → α` and `x : A`.
+
+      IMPORTANT: This is not a perfect solution. For example, `isDefEq` will be able assign metavariables associated with `by ...`.
+      This should not be an immediate problem since this feature is only used to implement `refine'`. If it becomes
+      an issue in practice, we should add a new kind of opaque metavariable for `refine'`, and mark the holes created using `_`
+      with it, and have a flag that allows us to assign this kind of metavariable, but prevents us from assigning metavariables
+      created by the `by ...` notation.
+      -/
+      withAssignableSyntheticOpaque go
+  else
+    go
+where
+  go := do
+    let mvarCounterSaved := (← getMCtx).mvarCounter
+    let val ← k
+    let newMVarIds ← getMVarsNoDelayed val
+    /- ignore let-rec auxiliary variables, they are synthesized automatically later -/
+    let newMVarIds ← newMVarIds.filterM fun mvarId => return !(← Term.isLetRecAuxMVar mvarId)
+    let newMVarIds ← if allowNaturalHoles then
+      pure newMVarIds.toList
+    else
+      let naturalMVarIds ← newMVarIds.filterM fun mvarId => return (← mvarId.getKind).isNatural
+      let syntheticMVarIds ← newMVarIds.filterM fun mvarId => return !(← mvarId.getKind).isNatural
+      let naturalMVarIds ← filterOldMVars naturalMVarIds mvarCounterSaved
+      logUnassignedAndAbort naturalMVarIds
+      pure syntheticMVarIds.toList
+    /-
+    We sort the new metavariable ids by index to ensure the new goals are ordered using the order the metavariables have been created.
+    See issue #1682.
+    Potential problem: if elaboration of subterms is delayed the order the new metavariables are created may not match the order they
+    appear in the `.lean` file. We should tell users to prefer tagged goals.
+    -/
+    let newMVarIds ← sortMVarIdsByIndex newMVarIds
+    tagUntaggedGoals (← getMainTag) tagSuffix newMVarIds
+    return (val, newMVarIds)
 
 def elabTermWithHoles (stx : Syntax) (expectedType? : Option Expr) (tagSuffix : Name) (allowNaturalHoles := false) : TacticM (Expr × List MVarId) := do
   withCollectingNewGoalsFrom (elabTermEnsuringType stx expectedType?) tagSuffix allowNaturalHoles
@@ -125,17 +154,17 @@ def refineCore (stx : Syntax) (tagSuffix : Name) (allowNaturalHoles : Bool) : Ta
       mvarId.assign val
     replaceMainGoal mvarIds'
 
-@[builtinTactic «refine»] def evalRefine : Tactic := fun stx =>
+@[builtin_tactic «refine»] def evalRefine : Tactic := fun stx =>
   match stx with
   | `(tactic| refine $e) => refineCore e `refine (allowNaturalHoles := false)
   | _                    => throwUnsupportedSyntax
 
-@[builtinTactic «refine'»] def evalRefine' : Tactic := fun stx =>
+@[builtin_tactic «refine'»] def evalRefine' : Tactic := fun stx =>
   match stx with
   | `(tactic| refine' $e) => refineCore e `refine' (allowNaturalHoles := true)
   | _                     => throwUnsupportedSyntax
 
-@[builtinTactic «specialize»] def evalSpecialize : Tactic := fun stx => withMainContext do
+@[builtin_tactic «specialize»] def evalSpecialize : Tactic := fun stx => withMainContext do
   match stx with
   | `(tactic| specialize $e:term) =>
     let (e, mvarIds') ← elabTermWithHoles e none `specialize (allowNaturalHoles := true)
@@ -145,7 +174,7 @@ def refineCore (stx : Syntax) (tagSuffix : Name) (allowNaturalHoles : Bool) : Ta
       let mvarId ← (← getMainGoal).assert localDecl.userName (← inferType e).headBeta e
       let (_, mvarId) ← mvarId.intro1P
       let mvarId ← mvarId.tryClear h.fvarId!
-      replaceMainGoal (mvarId :: mvarIds')
+      replaceMainGoal (mvarIds' ++ [mvarId])
     else
       throwError "'specialize' requires a term of the form `h x_1 .. x_n` where `h` appears in the local context"
   | _ => throwUnsupportedSyntax
@@ -208,13 +237,6 @@ def elabTermForApply (stx : Syntax) (mayPostpone := true) : TacticM Expr := do
   -/
   withoutRecover <| elabTerm stx none mayPostpone
 
-def evalApplyLikeTactic (tac : MVarId → Expr → MetaM (List MVarId)) (e : Syntax) : TacticM Unit := do
-  withMainContext do
-    let val  ← elabTermForApply e
-    let mvarIds'  ← tac (← getMainGoal) val
-    Term.synthesizeSyntheticMVarsNoPostponing
-    replaceMainGoal mvarIds'
-
 def getFVarId (id : Syntax) : TacticM FVarId := withRef id do
   -- use apply-like elaboration to suppress insertion of implicit arguments
   let e ← withMainContext do
@@ -226,24 +248,44 @@ def getFVarId (id : Syntax) : TacticM FVarId := withRef id do
 def getFVarIds (ids : Array Syntax) : TacticM (Array FVarId) := do
   withMainContext do ids.mapM getFVarId
 
-@[builtinTactic Lean.Parser.Tactic.apply] def evalApply : Tactic := fun stx =>
+def evalApplyLikeTactic (tac : MVarId → Expr → MetaM (List MVarId)) (e : Syntax) : TacticM Unit := do
+  withMainContext do
+    let mut val ← instantiateMVars (← elabTermForApply e)
+    if val.isMVar then
+      /-
+      If `val` is a metavariable, we force the elaboration of postponed terms.
+      This is useful for producing a more useful error message in examples such as
+      ```
+      example (h : P) : P ∨ Q := by
+        apply .inl
+      ```
+      Recall that `apply` elaborates terms without using the expected type,
+      and the notation `.inl` requires the expected type to be available.
+      -/
+      Term.synthesizeSyntheticMVarsNoPostponing
+      val ← instantiateMVars val
+    let mvarIds' ← tac (← getMainGoal) val
+    Term.synthesizeSyntheticMVarsNoPostponing
+    replaceMainGoal mvarIds'
+
+@[builtin_tactic Lean.Parser.Tactic.apply] def evalApply : Tactic := fun stx =>
   match stx with
   | `(tactic| apply $e) => evalApplyLikeTactic (·.apply) e
   | _ => throwUnsupportedSyntax
 
-@[builtinTactic Lean.Parser.Tactic.constructor] def evalConstructor : Tactic := fun _ =>
+@[builtin_tactic Lean.Parser.Tactic.constructor] def evalConstructor : Tactic := fun _ =>
   withMainContext do
     let mvarIds' ← (← getMainGoal).constructor
     Term.synthesizeSyntheticMVarsNoPostponing
     replaceMainGoal mvarIds'
 
-@[builtinTactic Lean.Parser.Tactic.withReducible] def evalWithReducible : Tactic := fun stx =>
+@[builtin_tactic Lean.Parser.Tactic.withReducible] def evalWithReducible : Tactic := fun stx =>
   withReducible <| evalTactic stx[1]
 
-@[builtinTactic Lean.Parser.Tactic.withReducibleAndInstances] def evalWithReducibleAndInstances : Tactic := fun stx =>
+@[builtin_tactic Lean.Parser.Tactic.withReducibleAndInstances] def evalWithReducibleAndInstances : Tactic := fun stx =>
   withReducibleAndInstances <| evalTactic stx[1]
 
-@[builtinTactic Lean.Parser.Tactic.withUnfoldingAll] def evalWithUnfoldingAll : Tactic := fun stx =>
+@[builtin_tactic Lean.Parser.Tactic.withUnfoldingAll] def evalWithUnfoldingAll : Tactic := fun stx =>
   withTransparency TransparencyMode.all <| evalTactic stx[1]
 
 /--
@@ -267,7 +309,7 @@ def elabAsFVar (stx : Syntax) (userName? : Option Name := none) : TacticM FVarId
       | none          => intro `h false
       | some userName => intro userName true
 
-@[builtinTactic Lean.Parser.Tactic.rename] def evalRename : Tactic := fun stx =>
+@[builtin_tactic Lean.Parser.Tactic.rename] def evalRename : Tactic := fun stx =>
   match stx with
   | `(tactic| rename $typeStx:term => $h:ident) => do
     withMainContext do
@@ -296,7 +338,7 @@ private def preprocessPropToDecide (expectedType : Expr) : TermElabM Expr := do
     throwError "expected type must not contain free or meta variables{indentExpr expectedType}"
   return expectedType
 
-@[builtinTactic Lean.Parser.Tactic.decide] def evalDecide : Tactic := fun _ =>
+@[builtin_tactic Lean.Parser.Tactic.decide] def evalDecide : Tactic := fun _ =>
   closeMainGoalUsing fun expectedType => do
     let expectedType ← preprocessPropToDecide expectedType
     let d ← mkDecide expectedType
@@ -319,7 +361,7 @@ private def mkNativeAuxDecl (baseName : Name) (type value : Expr) : TermElabM Na
   compileDecl decl
   pure auxName
 
-@[builtinTactic Lean.Parser.Tactic.nativeDecide] def evalNativeDecide : Tactic := fun _ =>
+@[builtin_tactic Lean.Parser.Tactic.nativeDecide] def evalNativeDecide : Tactic := fun _ =>
   closeMainGoalUsing fun expectedType => do
     let expectedType ← preprocessPropToDecide expectedType
     let d ← mkDecide expectedType

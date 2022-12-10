@@ -27,6 +27,7 @@ structure State where
 
 abbrev M := StateM State
 
+@[always_inline]
 instance : MonadMCtx M where
   getMCtx := return (← get).mctx
   modifyMCtx f := modify fun s => { s with mctx := f s.mctx }

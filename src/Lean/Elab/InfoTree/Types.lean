@@ -6,6 +6,7 @@ Authors: Wojciech Nawrocki, Leonardo de Moura, Sebastian Ullrich
 -/
 import Lean.Message
 import Lean.Data.Json
+import Lean.Data.Lsp.CodeActions
 
 namespace Lean.Elab
 
@@ -22,9 +23,12 @@ structure ContextInfo where
   ngen          : NameGenerator -- We must save the name generator to implement `ContextInfo.runMetaM` and making we not create `MVarId`s used in `mctx`.
   deriving Inhabited
 
-/-- An elaboration step -/
+/-- Base structure for `TermInfo`, `CommandInfo` and `TacticInfo`. -/
 structure ElabInfo where
+  /-- The name of the elaborator that created this info. -/
   elaborator : Name
+  /-- The piece of syntax that the elaborator created this info for.
+  Note that this also implicitly stores the code position in the syntax's SourceInfo. -/
   stx : Syntax
   deriving Inhabited
 
@@ -38,6 +42,8 @@ structure TermInfo extends ElabInfo where
 structure CommandInfo extends ElabInfo where
   deriving Inhabited
 
+/-- A completion is an item that appears in the [IntelliSense](https://code.visualstudio.com/docs/editor/intellisense)
+box that appears as you type. -/
 inductive CompletionInfo where
   | dot (termInfo : TermInfo) (field? : Option Syntax) (expectedType? : Option Expr)
   | id (stx : Syntax) (id : Name) (danglingDot : Bool) (lctx : LocalContext) (expectedType? : Option Expr)
@@ -48,6 +54,12 @@ inductive CompletionInfo where
   | endSection (stx : Syntax) (scopeNames : List String)
   | tactic (stx : Syntax) (goals : List MVarId)
   -- TODO `import`
+
+/-- Info for an option reference (e.g. in `set_option`). -/
+structure OptionInfo where
+  stx : Syntax
+  optionName : Name
+  declName : Name
 
 structure FieldInfo where
   /-- Name of the projection. -/
@@ -77,10 +89,10 @@ structure MacroExpansionInfo where
   output : Syntax
   deriving Inhabited
 
+/-- Dynamic info for custom use cases. -/
 structure CustomInfo where
   stx : Syntax
-  json : Json
-  deriving Inhabited
+  value : Dynamic
 
 /-- An info that represents a user-widget.
 User-widgets are custom pieces of code that run on the editor client.
@@ -120,6 +132,7 @@ inductive Info where
   | ofTermInfo (i : TermInfo)
   | ofCommandInfo (i : CommandInfo)
   | ofMacroExpansionInfo (i : MacroExpansionInfo)
+  | ofOptionInfo (i : OptionInfo)
   | ofFieldInfo (i : FieldInfo)
   | ofCompletionInfo (i : CompletionInfo)
   | ofUserWidgetInfo (i : UserWidgetInfo)

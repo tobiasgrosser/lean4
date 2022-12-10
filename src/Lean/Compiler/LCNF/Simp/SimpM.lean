@@ -75,6 +75,9 @@ structure State where
 
 abbrev SimpM := ReaderT Context $ StateRefT State DiscrM
 
+@[always_inline]
+instance : Monad SimpM := let i := inferInstanceAs (Monad SimpM); { pure := i.pure, bind := i.bind }
+
 instance : MonadFVarSubst SimpM false where
   getSubst := return (← get).subst
 
@@ -109,7 +112,7 @@ def addFunOcc (fvarId : FVarId) : SimpM Unit :=
 def addFunHoOcc (fvarId : FVarId) : SimpM Unit :=
   modify fun s => { s with funDeclInfoMap := s.funDeclInfoMap.addHo fvarId }
 
-@[inheritDoc FunDeclInfoMap.update]
+@[inherit_doc FunDeclInfoMap.update]
 partial def updateFunDeclInfo (code : Code) (mustInline := false) : SimpM Unit := do
   let map ← modifyGet fun s => (s.funDeclInfoMap, { s with funDeclInfoMap := {} })
   let map ← map.update code mustInline
@@ -119,17 +122,21 @@ partial def updateFunDeclInfo (code : Code) (mustInline := false) : SimpM Unit :
 Execute `x` with an updated `inlineStack`. If `value` is of the form `const ...`, add `const` to the stack.
 Otherwise, do not change the `inlineStack`.
 -/
-def withInlining (value : Expr) (recursive : Bool) (x : SimpM α) : SimpM α := do
-  let f := value.getAppFn
-  if let .const declName _ := f then
-    trace[Compiler.simp.inline] "{declName}"
-    let numOccs := (← read).inlineStackOccs.find? declName |>.getD 0
-    let numOccs := numOccs + 1
-    if recursive && hasInlineIfReduceAttribute (← getEnv) declName && numOccs > (← getConfig).maxRecInlineIfReduce then
-      throwError "function `{declName}` has been recursively inlined more than #{(← getConfig).maxRecInlineIfReduce}, consider removing the attribute `[inlineIfReduce]` from this declaration or increasing the limit using `set_option compiler.maxRecInlineIfReduce <num>`"
+@[inline] def withInlining (value : LetValue) (recursive : Bool) (x : SimpM α) : SimpM α := do
+  if let .const declName _ _ := value then
+    let numOccs ← check declName
     withReader (fun ctx => { ctx with inlineStack := declName :: ctx.inlineStack, inlineStackOccs := ctx.inlineStackOccs.insert declName numOccs }) x
   else
     x
+where
+  check (declName : Name) : SimpM Nat := do
+    trace[Compiler.simp.inline] "{declName}"
+    let numOccs := (← read).inlineStackOccs.find? declName |>.getD 0
+    let numOccs := numOccs + 1
+    let inlineIfReduce ← if let some decl ← getDecl? declName then pure decl.inlineIfReduceAttr else pure false
+    if recursive && inlineIfReduce && numOccs > (← getConfig).maxRecInlineIfReduce then
+      throwError "function `{declName}` has been recursively inlined more than #{(← getConfig).maxRecInlineIfReduce}, consider removing the attribute `[inline_if_reduce]` from this declaration or increasing the limit using `set_option compiler.maxRecInlineIfReduce <num>`"
+    return numOccs
 
 /--
 Similar to the default `Lean.withIncRecDepth`, but include the `inlineStack` in the error messsage.
@@ -201,34 +208,11 @@ LCNF "Beta-reduce". The equivalent of `(fun params => code) args`.
 If `mustInline` is true, the local function declarations in the resulting code are marked as `.mustInline`.
 See comment at `updateFunDeclInfo`.
 -/
-def betaReduce (params : Array Param) (code : Code) (args : Array Expr) (mustInline := false) : SimpM Code := do
+def betaReduce (params : Array Param) (code : Code) (args : Array Arg) (mustInline := false) : SimpM Code := do
   let mut subst := {}
-  let mut castDecls := #[]
   for param in params, arg in args do
-    /-
-    If `param` hast type `⊤` but `arg` does not, we must insert a cast.
-    Otherwise, the resulting code may be type incorrect.
-    For example, the following code is type correct before inlining `f`
-    because `x : ⊤`.
-    ```
-    def foo (g : A → A) (a : B) :=
-      fun f (x : ⊤) :=
-        let _x.1 := g x
-        ...
-      let _x.2 := f a
-      ...
-    ```
-    We must introduce a cast around `a` to make sure the resulting expression is type correct.
-    -/
-    if param.type.isAnyType && !(← inferType arg).isAnyType then
-      let castArg ← mkLcCast arg anyTypeExpr
-      let castDecl ← mkAuxLetDecl castArg
-      castDecls := castDecls.push (CodeDecl.let castDecl)
-      subst := subst.insert param.fvarId (.fvar castDecl.fvarId)
-    else
-      subst := subst.insert param.fvarId arg
+    subst := subst.insert param.fvarId arg.toExpr
   let code ← code.internalize subst
-  let code := LCNF.attachCodeDecls castDecls code
   updateFunDeclInfo code mustInline
   return code
 

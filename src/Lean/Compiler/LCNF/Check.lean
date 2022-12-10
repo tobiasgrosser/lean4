@@ -5,8 +5,74 @@ Authors: Leonardo de Moura
 -/
 import Lean.Compiler.LCNF.InferType
 import Lean.Compiler.LCNF.PrettyPrinter
+import Lean.Compiler.LCNF.CompatibleTypes
 
 namespace Lean.Compiler.LCNF
+
+/-!
+# Note: Type compatibility checking for LCNF
+
+We used to have a type compatibility relation `≃` for LCNF types.
+It treated erased types/values as wildcards. Examples:
+- `List Nat ≃ List ◾`
+- `(List ◾ → List ◾) ≃ (List Nat → List Bool)`
+
+We used this relation to sanity check compiler passes, and detect
+buggy transformations that broke type compatibility. For example,
+given an application `f a`, we would check whether `a`s type as
+compatible with the type expected by `f`.
+
+However, the type compatibility relation is not transitive. Example:
+- `List Nat ≃ List ◾`, `List ◾ ≃ List String`, but `List Nat` and `List String` are **not** compatible.
+
+We tried address the issue above by adding casts, which required us
+to then add `cast` elimination simplifications, and generated a significant overhead in
+the code generator.
+
+Here is an example of transformation that would require the insertion of a cast operation.
+```
+def foo (g : List A → List A) (a : List B) :=
+  fun f (x : List ◾) :=
+    let _x.1 := g x
+    ...
+  let _x.2 := f a
+  ...
+```
+The code above would not trigger any type compatibility issue, but
+by inlining `f` without adding cast operations, we would get the
+following type incorrect code.
+```
+def foo (g : List A → List A) (a : List B) :=
+let _x.2 := g a -- Type error
+...
+```
+
+We have considered using a reflexive and transitive subtype relation `≺`.
+- `A ≺ A`
+- `(Nat × Nat) ≺ (Nat × ◾) ≺ (◾ × ◾) ≺ ◾`
+- `List Nat ≺ List ◾ ⊀ List String`
+- `(List ◾ → List Nat) ≺ (List Bool → List ◾)`
+Note that `A ≺ B` implies `A ≃ B`
+
+The subtype relation has better properties, but also has problems.
+First, when converting to LCNF we would have to add more casts. Example:
+the function takes a `List ◾`, but the value has type `◾`.
+Moreover, recall that `(List Nat → List Nat) ⊀ (◾ → ◾)` forcing us
+to add many casts operations when moving to the mono phase where
+we erase type parameters.
+
+Recall that type compatibility and subtype relationships do not help with memory layout.
+We have that `(UInt32 × UInt32) ≺ (◾ × ◾) ≺ ◾` but elements of these types have
+different runtime representation.
+
+Thus, we have decided to abandon the type compatibility checks and cast operations
+in LCNF. The only drawback is that we lose the capability of catching simple bugs
+at compiler passes.
+
+In the future, we can try to add a sanity check flag that instructs the compiler to use
+the subtype relation in sanity checks and add the necessary casts.
+
+-/
 
 namespace Check
 open InferType
@@ -27,54 +93,56 @@ structure State where
 
 abbrev CheckM := ReaderT Context $ StateRefT State InferTypeM
 
+def checkTypes : CheckM Bool := do
+  return (← getConfig).checkTypes
+
 def checkFVar (fvarId : FVarId) : CheckM Unit :=
   unless (← read).vars.contains fvarId do
     throwError "invalid out of scope free variable {← getBinderName fvarId}"
 
-def checkAppArgs (f : Expr) (args : Array Expr) : CheckM Unit := do
+/-- Return true `f` is a constructor and `i` is less than its number of parameters. -/
+def isCtorParam (f : Expr) (i : Nat) : CoreM Bool := do
+  let .const declName _ := f | return false
+  let .ctorInfo info ← getConstInfo declName | return false
+  return i < info.numParams
+
+def checkAppArgs (f : Expr) (args : Array Arg) : CheckM Unit := do
   let mut fType ← inferType f
   let mut j := 0
   for i in [:args.size] do
     let arg := args[i]!
-    if fType.isAnyType then
+    if fType.isErased then
       return ()
     fType := fType.headBeta
     let (d, b) ←
       match fType with
       | .forallE _ d b _ => pure (d, b)
       | _ =>
-        fType := fType.instantiateRevRange j i args |>.headBeta
+        fType := instantiateRevRangeArgs fType j i args |>.headBeta
         match fType with
         | .forallE _ d b _ => j := i; pure (d, b)
-        | _ =>
-          if fType.isAnyType then return ()
-          throwError "function expected at{indentExpr (mkAppN f args)}\narrow type expected{indentExpr fType}"
-    let argType ← inferType arg
-    let expectedType := d.instantiateRevRange j i args
-    unless (← InferType.compatibleTypes argType expectedType) do
-      throwError "type mismatch at LCNF application{indentExpr (mkAppN f args)}\nargument {arg} has type{indentExpr argType}\nbut is expected to have type{indentExpr expectedType}"
+        | _ => return ()
+    let expectedType := instantiateRevRangeArgs d j i args
+    if (← checkTypes) then
+      let argType ← arg.inferType
+      unless (← InferType.compatibleTypes argType expectedType) do
+        throwError "type mismatch at LCNF application{indentExpr (mkAppN f (args.map Arg.toExpr))}\nargument {arg.toExpr} has type{indentExpr argType}\nbut is expected to have type{indentExpr expectedType}"
     unless (← pure (maybeTypeFormerType expectedType) <||> isErasedCompatible expectedType) do
-      unless arg.isFVar do
-        throwError "invalid LCNF application{indentExpr (mkAppN f args)}\nargument{indentExpr arg}\nhas type{indentExpr expectedType}\nmust be a free variable"
-      checkFVar arg.fvarId!
+      match arg with
+      | .fvar fvarId => checkFVar fvarId
+      | .erased => pure ()
+      | .type _ =>
+        -- Constructor parameters that are not type formers are erased at phase .mono
+        unless (← getPhase) ≥ .mono && (← isCtorParam f i) do
+          throwError "invalid LCNF application{indentExpr (mkAppN f (args.map (·.toExpr)))}\nargument{indentExpr arg.toExpr}\nhas type{indentExpr expectedType}\nmust be a free variable"
     fType := b
 
-def checkApp (f : Expr) (args : Array Expr) : CheckM Unit := do
-  unless f.isConst || f.isFVar do
-    throwError "unexpected function application, function must be a constant or free variable{indentExpr (mkAppN f args)}"
-  if f.isFVar then
-    checkFVar f.fvarId!
-  checkAppArgs f args
-
-def checkExpr (e : Expr) : CheckM Unit :=
+def checkLetValue (e : LetValue) : CheckM Unit := do
   match e with
-  | .lit _ => pure ()
-  | .app .. => checkApp e.getAppFn e.getAppArgs
-  | .proj _ _ (.fvar fvarId) => checkFVar fvarId
-  | .mdata _ (.fvar fvarId)  => checkFVar fvarId
-  | .const _ _ => pure () -- TODO: check number of universe level parameters
-  | .fvar fvarId => checkFVar fvarId
-  | _ => throwError "unexpected expression at LCNF{indentExpr e}"
+  | .value .. | .erased => pure ()
+  | .const declName us args => checkAppArgs (mkConst declName us) args
+  | .fvar fvarId args => checkFVar fvarId; checkAppArgs (.fvar fvarId) args
+  | .proj _ _ fvarId => checkFVar fvarId
 
 def checkJpInScope (jp : FVarId) : CheckM Unit := do
   unless (← read).jps.contains jp do
@@ -98,10 +166,11 @@ def checkParams (params : Array Param) : CheckM Unit :=
   params.forM checkParam
 
 def checkLetDecl (letDecl : LetDecl) : CheckM Unit := do
-  checkExpr letDecl.value
-  let valueType ← inferType letDecl.value
-  unless (← InferType.compatibleTypes letDecl.type valueType) do
-    throwError "type mismatch at `{letDecl.binderName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr letDecl.type}"
+  checkLetValue letDecl.value
+  if (← checkTypes) then
+    let valueType ← letDecl.value.inferType
+    unless (← InferType.compatibleTypes letDecl.type valueType) do
+      throwError "type mismatch at `{letDecl.binderName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr letDecl.type}"
   unless letDecl == (← getLetDecl letDecl.fvarId) do
     throwError "LCNF let declaration mismatch at `{letDecl.binderName}`, does not match value in local context"
 
@@ -125,15 +194,19 @@ def addFVarId (fvarId : FVarId) : CheckM Unit := do
 
 mutual
 
-partial def checkFunDeclCore (declName : Name) (type : Expr) (params : Array Param) (value : Code) : CheckM Unit := do
+set_option linter.all false
+
+partial def checkFunDeclCore (declName : Name) (params : Array Param) (type : Expr) (value : Code) : CheckM Unit := do
   checkParams params
-  let valueType ← withParams params do
-    mkForallParams params (← check value)
-  unless (← InferType.compatibleTypes type valueType) do
-    throwError "type mismatch at `{declName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr type}"
+  withParams params do
+    discard <| check value
+    if (← checkTypes) then
+      let valueType ← mkForallParams params (← value.inferType)
+      unless (← InferType.compatibleTypes type valueType) do
+        throwError "type mismatch at `{declName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr type}"
 
 partial def checkFunDecl (funDecl : FunDecl) : CheckM Unit := do
-  checkFunDeclCore funDecl.binderName funDecl.type funDecl.params funDecl.value
+  checkFunDeclCore funDecl.binderName funDecl.params funDecl.type funDecl.value
   let decl ← getFunDecl funDecl.fvarId
   unless decl.binderName == funDecl.binderName do
     throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, binder name in local context `{decl.binderName}`"
@@ -142,36 +215,26 @@ partial def checkFunDecl (funDecl : FunDecl) : CheckM Unit := do
   unless (← getFunDecl funDecl.fvarId) == funDecl do
     throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, declaration in local context does match"
 
-partial def checkCases (c : Cases) : CheckM Expr := do
+partial def checkCases (c : Cases) : CheckM Unit := do
   let mut ctorNames : NameSet := {}
   let mut hasDefault := false
   checkFVar c.discr
-  let discrType ← LCNF.getType c.discr
-  unless discrType.isAnyType do
-    let .const declName _ := discrType.headBeta.getAppFn | throwError "unexpected LCNF discriminant type {discrType}"
-    unless c.typeName == declName do
-      throwError "invalid LCNF `{c.typeName}.casesOn`, discriminant has type{indentExpr discrType}"
   for alt in c.alts do
-    let type ←
-      match alt with
-      | .default k => hasDefault := true; check k
-      | .alt ctorName params k =>
-        checkParams params
-        if ctorNames.contains ctorName then
-          throwError "invalid LCNF `cases`, alternative `{ctorName}` occurs more than once"
-        ctorNames := ctorNames.insert ctorName
-        let .ctorInfo val ← getConstInfo ctorName | throwError "invalid LCNF `cases`, `{ctorName}` is not a constructor name"
-        unless val.induct == c.typeName do
-          throwError "invalid LCNF `cases`, `{ctorName}` is not a constructor of `{c.typeName}`"
-        unless params.size == val.numFields do
-          throwError "invalid LCNF `cases`, `{ctorName}` has # {val.numFields} fields, but alternative has # {params.size} alternatives"
-        -- TODO: check whether the ctor field types as parameter types match.
-        withParams params do check k
-    unless (← InferType.compatibleTypes type c.resultType) do
-      throwError "type mismatch at LCNF `cases` alternative\nhas type{indentExpr type}\nbut is expected to have type{indentExpr c.resultType}"
-  return c.resultType
+    match alt with
+    | .default k => hasDefault := true; check k
+    | .alt ctorName params k =>
+      checkParams params
+      if ctorNames.contains ctorName then
+        throwError "invalid LCNF `cases`, alternative `{ctorName}` occurs more than once"
+      ctorNames := ctorNames.insert ctorName
+      let .ctorInfo val ← getConstInfo ctorName | throwError "invalid LCNF `cases`, `{ctorName}` is not a constructor name"
+      unless val.induct == c.typeName do
+        throwError "invalid LCNF `cases`, `{ctorName}` is not a constructor of `{c.typeName}`"
+      unless params.size == val.numFields do
+        throwError "invalid LCNF `cases`, `{ctorName}` has # {val.numFields} fields, but alternative has # {params.size} alternatives"
+      withParams params do check k
 
-partial def check (code : Code) : CheckM Expr := do
+partial def check (code : Code) : CheckM Unit := do
   match code with
   | .let decl k => checkLetDecl decl; withFVarId decl.fvarId do check k
   | .fun decl k =>
@@ -184,10 +247,10 @@ partial def check (code : Code) : CheckM Expr := do
     checkJpInScope fvarId
     let decl ← getFunDecl fvarId
     unless decl.getArity == args.size do
-      throwError "invalid LCNF `jmp`, join point has #{decl.getArity} parameters, but #{args.size} were provided"
-    checkAppArgs (.fvar fvarId) args; code.inferType
-  | .return fvarId => checkFVar fvarId; code.inferType
-  | .unreach .. => code.inferType
+      throwError "invalid LCNF `goto`, join point {decl.binderName} has #{decl.getArity} parameters, but #{args.size} were provided"
+    checkAppArgs (.fvar fvarId) args
+  | .return fvarId => checkFVar fvarId
+  | .unreach .. => pure ()
 
 end
 
@@ -197,7 +260,7 @@ def run (x : CheckM α) : CompilerM α :=
 end Check
 
 def Decl.check (decl : Decl) : CompilerM Unit := do
-  Check.run do Check.checkFunDeclCore decl.name decl.type decl.params decl.value
+  Check.run do Check.checkFunDeclCore decl.name decl.params decl.type decl.value
 
 /--
 Check whether every local declaration in the local context is used in one of given `decls`.

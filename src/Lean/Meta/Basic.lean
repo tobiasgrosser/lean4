@@ -97,14 +97,11 @@ structure Config where
       the type of `t` with the goal target type. We claim this is not a hack and is defensible behavior because
       this last unification step is not really part of the term elaboration. -/
   assignSyntheticOpaque : Bool := false
-  /-- When `ignoreLevelDepth` is `false`, only universe level metavariables with depth == metavariable context depth
+  /-- When `ignoreLevelDepth` is `false`, only universe level metavariables with `depth == metavariable` context depth
       can be assigned.
       We used to have `ignoreLevelDepth == false` always, but this setting produced counterintuitive behavior in a few
       cases. Recall that universe levels are often ignored by users, they may not even be aware they exist.
-      We still use this restriction for regular metavariables. See discussion at the beginning of `MetavarContext.lean`.
-      We claim it is reasonable to ignore this restriction for universe metavariables because their values are often
-      contrained by the terms is instances and simp theorems.
-      TODO: we should delete this configuration option and the method `isReadOnlyLevelMVar` after we have more tests.
+      We set `ignoreLevelMVarDepth := false` during `simp`. See comment at `withSimpConfig` and issue #1829.
   -/
   ignoreLevelMVarDepth  : Bool := true
   /-- Enable/Disable support for offset constraints such as `?x + 1 =?= e` -/
@@ -169,7 +166,7 @@ def ParamInfo.isStrictImplicit (p : ParamInfo) : Bool :=
   p.binderInfo == BinderInfo.strictImplicit
 
 def ParamInfo.isExplicit (p : ParamInfo) : Bool :=
-  p.binderInfo == BinderInfo.default || p.binderInfo == BinderInfo.auxDecl
+  p.binderInfo == BinderInfo.default
 
 
 /--
@@ -300,6 +297,7 @@ abbrev MetaM  := ReaderT Context $ StateRefT State CoreM
 
 -- Make the compiler generate specialized `pure`/`bind` so we do not have to optimize through the
 -- whole monad stack at every use site. May eventually be covered by `deriving`.
+@[always_inline]
 instance : Monad MetaM := let i := inferInstanceAs (Monad MetaM); { pure := i.pure, bind := i.bind }
 
 instance : Inhabited (MetaM α) where
@@ -906,10 +904,9 @@ def restoreSynthInstanceCache (cache : SynthInstanceCache) : MetaM Unit :=
 
 private def withNewLocalInstanceImp (className : Name) (fvar : Expr) (k : MetaM α) : MetaM α := do
   let localDecl ← getFVarLocalDecl fvar
-  /- Recall that we use `auxDecl` binderInfo when compiling recursive declarations. -/
-  match localDecl.binderInfo with
-  | .auxDecl => k
-  | _ =>
+  if localDecl.isImplementationDetail then
+    k
+  else
     resettingSynthInstanceCache <|
       withReader
         (fun ctx => { ctx with localInstances := ctx.localInstances.push { className := className, fvar := fvar } })
@@ -1199,23 +1196,24 @@ where
         process mvars bis j b
       | _ => finalize ()
 
-private def withNewFVar (fvar fvarType : Expr) (k : Expr → MetaM α) : MetaM α := do
-  match (← isClass? fvarType) with
-  | none   => k fvar
-  | some c => withNewLocalInstance c fvar <| k fvar
+private def withNewFVar (n : Name) (fvar fvarType : Expr) (k : Expr → MetaM α) : MetaM α := do
+  if let some c ← isClass? fvarType then
+    withNewLocalInstance c fvar <| k fvar
+  else
+    k fvar
 
-private def withLocalDeclImp (n : Name) (bi : BinderInfo) (type : Expr) (k : Expr → MetaM α) : MetaM α := do
+private def withLocalDeclImp (n : Name) (bi : BinderInfo) (type : Expr) (k : Expr → MetaM α) (kind : LocalDeclKind) : MetaM α := do
   let fvarId ← mkFreshFVarId
   let ctx ← read
-  let lctx := ctx.lctx.mkLocalDecl fvarId n type bi
+  let lctx := ctx.lctx.mkLocalDecl fvarId n type bi kind
   let fvar := mkFVar fvarId
   withReader (fun ctx => { ctx with lctx := lctx }) do
-    withNewFVar fvar type k
+    withNewFVar n fvar type k
 
 /-- Create a free variable `x` with name, binderInfo and type, add it to the context and run in `k`.
 Then revert the context. -/
-def withLocalDecl (name : Name) (bi : BinderInfo) (type : Expr) (k : Expr → n α) : n α :=
-  map1MetaM (fun k => withLocalDeclImp name bi type k) k
+def withLocalDecl (name : Name) (bi : BinderInfo) (type : Expr) (k : Expr → n α) (kind : LocalDeclKind := .default) : n α :=
+  map1MetaM (fun k => withLocalDeclImp name bi type k kind) k
 
 def withLocalDeclD (name : Name) (type : Expr) (k : Expr → n α) : n α :=
   withLocalDecl name BinderInfo.default type k
@@ -1265,32 +1263,32 @@ def withInstImplicitAsImplict (xs : Array Expr) (k : MetaM α) : MetaM α := do
       return none
   withNewBinderInfos newBinderInfos k
 
-private def withLetDeclImp (n : Name) (type : Expr) (val : Expr) (k : Expr → MetaM α) : MetaM α := do
+private def withLetDeclImp (n : Name) (type : Expr) (val : Expr) (k : Expr → MetaM α) (kind : LocalDeclKind) : MetaM α := do
   let fvarId ← mkFreshFVarId
   let ctx ← read
-  let lctx := ctx.lctx.mkLetDecl fvarId n type val
+  let lctx := ctx.lctx.mkLetDecl fvarId n type val (nonDep := false) kind
   let fvar := mkFVar fvarId
   withReader (fun ctx => { ctx with lctx := lctx }) do
-    withNewFVar fvar type k
+    withNewFVar n fvar type k
 
 /--
   Add the local declaration `<name> : <type> := <val>` to the local context and execute `k x`, where `x` is a new
   free variable corresponding to the `let`-declaration. After executing `k x`, the local context is restored.
 -/
-def withLetDecl (name : Name) (type : Expr) (val : Expr) (k : Expr → n α) : n α :=
-  map1MetaM (fun k => withLetDeclImp name type val k) k
+def withLetDecl (name : Name) (type : Expr) (val : Expr) (k : Expr → n α) (kind : LocalDeclKind := .default) : n α :=
+  map1MetaM (fun k => withLetDeclImp name type val k kind) k
 
 def withLocalInstancesImp (decls : List LocalDecl) (k : MetaM α) : MetaM α := do
-  let localInsts := (← read).localInstances
+  let mut localInsts := (← read).localInstances
   let size := localInsts.size
-  let localInstsNew ← decls.foldlM (init := localInsts) fun localInstsNew decl => do
-    match (← isClass? decl.type) with
-    | none => return localInstsNew
-    | some className => return localInstsNew.push { className, fvar := decl.toExpr }
-  if localInstsNew.size == size then
+  for decl in decls do
+    unless decl.isImplementationDetail do
+      if let some className ← isClass? decl.type then
+        localInsts := localInsts.push { className, fvar := decl.toExpr }
+  if localInsts.size == size then
     k
   else
-    resettingSynthInstanceCache <| withReader (fun ctx => { ctx with localInstances := localInstsNew }) k
+    resettingSynthInstanceCache <| withReader (fun ctx => { ctx with localInstances := localInsts }) k
 
 /-- Register any local instance in `decls` -/
 def withLocalInstances (decls : List LocalDecl) : n α → n α :=
@@ -1324,12 +1322,11 @@ private def withNewMCtxDepthImp (x : MetaM α) : MetaM α := do
     modify fun s => { s with mctx := saved.mctx, postponed := saved.postponed }
 
 /--
-  Save cache and `MetavarContext`, bump the `MetavarContext` depth, execute `x`,
-  and restore saved data.
-
-  Metavariable context depths are used to control which metavariables may be assigned in `isDefEq`.
+  `withNewMCtxDepth k` executes `k` with a higher metavariable context depth,
+  where metavariables created outside the `withNewMCtxDepth` (with a lower depth) cannot be assigned.
+  Note that this does not affect level metavariables (by default).
   See the docstring of `isDefEq` for more information.
-   -/
+-/
 def withNewMCtxDepth : n α → n α :=
   mapMetaM withNewMCtxDepthImp
 
@@ -1665,6 +1662,10 @@ def isExprDefEq (t s : Expr) : MetaM Bool :=
   The combinator `withNewMCtxDepth x` will bump the depth while executing `x`.
   So, `withNewMCtxDepth (isDefEq a b)` is `isDefEq` without any mvar assignment happening
   whereas `isDefEq a b` will assign any metavariables of the current depth in `a` and `b` to unify them.
+
+  By default, level metavariables can be assigned at any depth.
+  That is, `withNewMCtxDepth (isDefEq a b)` will still assign level mvars in `a` and `b`.
+  Setting the option `ignoreLevelMVarDepth := false` will disable this behavior.
 
   For matching (where only mvars in `b` should be assigned), we create the term inside the `withNewMCtxDepth`.
   For an example, see [Lean.Meta.Simp.tryTheoremWithExtraArgs?](https://github.com/leanprover/lean4/blob/master/src/Lean/Meta/Tactic/Simp/Rewrite.lean#L100-L106)

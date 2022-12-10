@@ -36,7 +36,7 @@ def mkFoo₂ := mkFoo₁
 
 syntax (name := elabTest) "test" : term
 
-@[termElab elabTest] def elabElabTest : Lean.Elab.Term.TermElab := fun _ _ => do
+@[term_elab elabTest] def elabElabTest : Lean.Elab.Term.TermElab := fun _ _ => do
   let stx ← `(2)
   Lean.Elab.Term.elabTerm stx none
 
@@ -59,4 +59,8 @@ where
 
 macro_rules | `(test) => `(3)
 #check test
+     --^ textDocument/definition
+
+-- duplicate definitions link to the original
+def mkFoo₁ := 1
      --^ textDocument/definition

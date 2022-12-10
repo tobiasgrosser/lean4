@@ -50,15 +50,15 @@ where
 def commandCommentBody : Parser :=
   { fn := rawFn commandCommentBodyFn (trailingWs := true) }
 
-@[combinatorParenthesizer commandCommentBody] def commandCommentBody.parenthesizer := PrettyPrinter.Parenthesizer.visitToken
-@[combinatorFormatter commandCommentBody] def commandCommentBody.formatter := PrettyPrinter.Formatter.visitAtom Name.anonymous
+@[combinator_parenthesizer commandCommentBody] def commandCommentBody.parenthesizer := PrettyPrinter.Parenthesizer.visitToken
+@[combinator_formatter commandCommentBody] def commandCommentBody.formatter := PrettyPrinter.Formatter.visitAtom Name.anonymous
 
-@[commandParser] def commandComment := leading_parser "//-" >> commandCommentBody >> ppLine
+@[command_parser] def commandComment := leading_parser "//-" >> commandCommentBody >> ppLine
 
 end
 
 open Lean Elab Command in
-@[commandElab commandComment] def elabCommandComment : CommandElab := fun stx => do
+@[command_elab commandComment] def elabCommandComment : CommandElab := fun stx => do
    let .atom _ val := stx[1] | return ()
    let str := val.extract 0 (val.endPos - ⟨3⟩)
    IO.println s!"str := {repr str}"
@@ -82,7 +82,7 @@ elab "seq" s:tacticSeq : tactic => do
   let tacs := getTactics s
   for tac in tacs do
     let gs ← getUnsolvedGoals
-    withRef tac <| Meta.withPPForTacticGoal <| addRawTrace (goalsToMessageData gs)
+    withRef tac <| addRawTrace (goalsToMessageData gs)
     evalTactic tac
 
 example (h : x = y) : 0 + x = y := by

@@ -121,9 +121,11 @@ with builtins; let
   candidateFiles = map modToLean candidateMods;
   modDepsFile = args.modDepsFile or mkBareDerivation {
     name = "${name}-deps.json";
+    candidateFiles = lib.concatStringsSep " " candidateFiles;
+    passAsFile = [ "candidateFiles" ];
     buildCommand = ''
       mkdir $out
-      ${lean-leanDeps}/bin/lean --deps-json ${lib.concatStringsSep " " candidateFiles} > $out/$name
+      ${lean-leanDeps}/bin/lean --deps-json --stdin < $candidateFilesPath > $out/$name
     '';
   };
   modDeps = fromJSON (
@@ -134,6 +136,7 @@ with builtins; let
   buildMod = mod: deps: mkBareDerivation rec {
     name = "${mod}";
     LEAN_PATH = depRoot mod deps;
+    LEAN_ABORT_ON_PANIC = "1";
     relpath = modToPath mod;
     buildInputs = [ lean ];
     leanPath = relpath + ".lean";

@@ -1,3 +1,4 @@
+import Lean.Elab.Command
 import Lean.Linter.Util
 import Lean.Server.References
 
@@ -21,6 +22,7 @@ def getLinterUnusedVariables (o : Options) : Bool := getLinterValue linter.unuse
 def getLinterUnusedVariablesFunArgs (o : Options) : Bool := o.get linter.unusedVariables.funArgs.name (getLinterUnusedVariables o)
 def getLinterUnusedVariablesPatternVars (o : Options) : Bool := o.get linter.unusedVariables.patternVars.name (getLinterUnusedVariables o)
 
+abbrev IgnoreFunction := Syntax → Syntax.Stack → Options → Bool
 
 builtin_initialize builtinUnusedVariablesIgnoreFnsRef : IO.Ref <| Array IgnoreFunction ← IO.mkRef #[]
 
@@ -67,7 +69,7 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack _ =>
     stx.isOfKind ``Lean.Parser.Command.declSig) &&
   (stack.get? 5 |>.any fun (stx, _) => match stx[0] with
     | `(Lean.Parser.Command.declModifiersT| $[$_:docComment]? @[$[$attrs:attr],*] $[$vis]? $[noncomputable]?) =>
-      attrs.any (fun attr => attr.raw.isOfKind ``Parser.Attr.extern || attr matches `(attr| implementedBy $_))
+      attrs.any (fun attr => attr.raw.isOfKind ``Parser.Attr.extern || attr matches `(attr| implemented_by $_))
     | _ => false))
 
 -- is in dependent arrow
@@ -93,7 +95,7 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack opts =>
 builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack opts =>
   !getLinterUnusedVariablesFunArgs opts &&
   (stack.matches [`null, ``Lean.Parser.Term.basicFun] ||
-  stack.matches [`null, ``Lean.Parser.Term.paren, `null, ``Lean.Parser.Term.basicFun]))
+  stack.matches [``Lean.Parser.Term.typeAscription, `null, ``Lean.Parser.Term.basicFun]))
 
 -- is pattern variable
 builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack opts =>
@@ -104,20 +106,19 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack opts =>
 
 builtin_initialize unusedVariablesIgnoreFnsExt : SimplePersistentEnvExtension Name Unit ←
   registerSimplePersistentEnvExtension {
-    name          := `unusedVariablesIgnoreFns
     addEntryFn    := fun _ _ => ()
     addImportedFn := fun _ => ()
   }
 
 builtin_initialize
   registerBuiltinAttribute {
-    name  := `unusedVariablesIgnoreFn
+    name  := `unused_variables_ignore_fn
     descr := "Marks a function of type `Lean.Linter.IgnoreFunction` for suppressing unused variable warnings"
     add   := fun decl stx kind => do
       Attribute.Builtin.ensureNoArgs stx
-      unless kind == AttributeKind.global do throwError "invalid attribute 'unusedVariablesIgnoreFn', must be global"
+      unless kind == AttributeKind.global do throwError "invalid attribute 'unused_variables_ignore_fn', must be global"
       unless (← getConstInfo decl).type.isConstOf ``IgnoreFunction do
-        throwError "invalid attribute 'unusedVariablesIgnoreFn', must be of type `Lean.Linter.IgnoreFunction`"
+        throwError "invalid attribute 'unused_variables_ignore_fn', must be of type `Lean.Linter.IgnoreFunction`"
       let env ← getEnv
       setEnv <| unusedVariablesIgnoreFnsExt.addEntry env decl
   }
@@ -127,7 +128,7 @@ unsafe def getUnusedVariablesIgnoreFnsImpl : CommandElabM (Array IgnoreFunction)
   let ents ← ents.mapM (evalConstCheck IgnoreFunction ``IgnoreFunction)
   return (← builtinUnusedVariablesIgnoreFnsRef.get) ++ ents
 
-@[implementedBy getUnusedVariablesIgnoreFnsImpl]
+@[implemented_by getUnusedVariablesIgnoreFnsImpl]
 opaque getUnusedVariablesIgnoreFns : CommandElabM (Array IgnoreFunction)
 
 
@@ -188,6 +189,7 @@ def unusedVariables : Linter := fun cmdStx => do
     |>.insertAt! 0 (isTopLevelDecl constDecls)
 
   -- determine unused variables
+  let mut unused := #[]
   for (id, ⟨decl?, uses⟩) in vars.toList do
     -- process declaration
     let some decl := decl?
@@ -231,6 +233,9 @@ def unusedVariables : Linter := fun cmdStx => do
       continue
 
     -- publish warning if variable is unused and not ignored
+    unused := unused.push (declStx, localDecl)
+
+  for (declStx, localDecl) in unused.qsort (·.1.getPos?.get! < ·.1.getPos?.get!) do
     logLint linter.unusedVariables declStx m!"unused variable `{localDecl.userName}`"
 
   return ()

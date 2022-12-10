@@ -12,6 +12,11 @@ import Lean.Compiler.LCNF.ReduceJpArity
 import Lean.Compiler.LCNF.JoinPoints
 import Lean.Compiler.LCNF.Specialize
 import Lean.Compiler.LCNF.PhaseExt
+import Lean.Compiler.LCNF.ToMono
+import Lean.Compiler.LCNF.LambdaLifting
+import Lean.Compiler.LCNF.FloatLetIn
+import Lean.Compiler.LCNF.ReduceArity
+import Lean.Compiler.LCNF.ElimDeadBranches
 
 namespace Lean.Compiler.LCNF
 
@@ -24,16 +29,17 @@ def init : Pass where
     return decls
   phase := .base
 
-def normalizeFVarIds (decl : Decl) : CoreM Decl := do
-  let ngenSaved ← getNGen
-  setNGen {}
-  try
-    CompilerM.run <| decl.internalize
-  finally
-    setNGen ngenSaved
+-- Helper pass used for debugging purposes
+def trace (phase := Phase.base) : Pass where
+  name  := `trace
+  run   := pure
+  phase := phase
 
 def saveBase : Pass :=
   .mkPerDeclaration `saveBase (fun decl => do (← normalizeFVarIds decl).saveBase; return decl) .base
+
+def saveMono : Pass :=
+  .mkPerDeclaration `saveMono (fun decl => do (← normalizeFVarIds decl).saveMono; return decl) .mono
 
 def builtinPassManager : PassManager := {
   passes := #[
@@ -41,15 +47,36 @@ def builtinPassManager : PassManager := {
     pullInstances,
     cse,
     simp,
+    floatLetIn,
     findJoinPoints,
     pullFunDecls,
     reduceJpArity,
-    -- extendJoinPointContext,
+    /-
+    We apply `implementedBy` replacements before `specialize` to ensure we specialize the replacement.
+    One possible improvement is to perform only the replacements if the target declaration is a specialization target,
+    and on phase 2 (aka mono) perform the remaining replacements.
+    -/
     simp { etaPoly := true, inlinePartial := true, implementedBy := true } (occurrence := 1),
+    eagerLambdaLifting,
     specialize,
     simp (occurrence := 2),
-    cse,
-    saveBase -- End of base phase
+    cse (occurrence := 1),
+    saveBase, -- End of base phase
+    toMono,
+    simp (occurrence := 3) (phase := .mono),
+    reduceJpArity (phase := .mono),
+    extendJoinPointContext (phase := .mono) (occurrence := 0),
+    floatLetIn (phase := .mono) (occurrence := 1),
+    reduceArity,
+    commonJoinPointArgs,
+    simp (occurrence := 4) (phase := .mono),
+    floatLetIn (phase := .mono) (occurrence := 2),
+    elimDeadBranches,
+    lambdaLifting,
+    extendJoinPointContext (phase := .mono) (occurrence := 1),
+    simp (occurrence := 5) (phase := .mono),
+    cse (occurrence := 2) (phase := .mono),
+    saveMono  -- End of mono phase
   ]
 }
 
@@ -62,7 +89,6 @@ def runImportedDecls (importedDeclNames : Array (Array Name)) : CoreM PassManage
 
 builtin_initialize passManagerExt : PersistentEnvExtension Name (Name × PassManager) (List Name × PassManager) ←
   registerPersistentEnvExtension {
-    name := `cpass
     mkInitial := return ([], builtinPassManager)
     addImportedFn := fun ns => return ([], ← ImportM.runCoreM <| runImportedDecls ns)
     addEntryFn := fun (installerDeclNames, _) (installerDeclName, managerNew) => (installerDeclName :: installerDeclNames, managerNew)
@@ -94,5 +120,7 @@ builtin_initialize
 
 builtin_initialize
   registerTraceClass `Compiler.saveBase (inherited := true)
+  registerTraceClass `Compiler.saveMono (inherited := true)
+  registerTraceClass `Compiler.trace (inherited := true)
 
 end Lean.Compiler.LCNF

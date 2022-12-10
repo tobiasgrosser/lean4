@@ -21,13 +21,13 @@ they *can* easily create custom handlers and use them in the same file. -/
 builtin_initialize builtinRpcProcedures : IO.Ref (PHashMap Name RpcProcedure) ←
   IO.mkRef {}
 builtin_initialize userRpcProcedures : MapDeclarationExtension Name ←
-  mkMapDeclarationExtension `userRpcProcedures
+  mkMapDeclarationExtension
 
 private unsafe def evalRpcProcedureUnsafe (env : Environment) (opts : Options) (procName : Name) :
     Except String RpcProcedure :=
   env.evalConstCheck RpcProcedure opts ``RpcProcedure procName
 
-@[implementedBy evalRpcProcedureUnsafe]
+@[implemented_by evalRpcProcedureUnsafe]
 opaque evalRpcProcedure (env : Environment) (opts : Options) (procName : Name) :
     Except String RpcProcedure
 
@@ -126,7 +126,7 @@ def registerRpcProcedure (method : Name) : CoreM Unit := do
   setEnv <| userRpcProcedures.insert (← getEnv) method wrappedName
 
 builtin_initialize registerBuiltinAttribute {
-  name := `serverRpcMethod
+  name := `server_rpc_method
   descr := "Marks a function as a Lean server RPC method.
     Shorthand for `registerRpcProcedure`.
     The function must have type `α → RequestM (RequestTask β)` with

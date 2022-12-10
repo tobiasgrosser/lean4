@@ -36,6 +36,7 @@ $CP llvm/lib/clang/*/include/{std*,__std*,limits}.h stage1/include/clang
 cp $SDK/usr/lib/libSystem.tbd stage1/lib/libc
 # use for linking, use system libs for running
 gcp llvm/lib/lib{c++,c++abi,unwind}.dylib stage1/lib/libc
+echo -n " -DLLVM=ON -DLLVM_CONFIG=$PWD/llvm-host/bin/llvm-config" # manually point to `llvm-config` location
 echo -n " -DLEAN_STANDALONE=ON"
 # do not change C++ compiler; libc++ etc. being system libraries means there's no danger of conflicts,
 # and the custom clang++ outputs a myriad of warnings when consuming the SDK
@@ -46,7 +47,7 @@ if [[ -L llvm-host ]]; then
   echo -n " -DLEANC_INTERNAL_LINKER_FLAGS='-L ROOT/lib -L ROOT/lib/libc -fuse-ld=lld'"
   echo -n " -DLEAN_EXTRA_LINKER_FLAGS='-lgmp'"
 else
-  echo -n " -DCMAKE_C_COMPILER=$PWD/llvm-host/bin/clang -DLEANC_OPTS='--sysroot $PWD/stage1 -resource-dir $PWD/stage1/lib/clang/14.0.0 ${EXTRA_FLAGS:-}'"
+  echo -n " -DCMAKE_C_COMPILER=$PWD/llvm-host/bin/clang -DLEANC_OPTS='--sysroot $PWD/stage1 -resource-dir $PWD/stage1/lib/clang/15.0.1 ${EXTRA_FLAGS:-}'"
   echo -n " -DLEANC_INTERNAL_LINKER_FLAGS='-L ROOT/lib -L ROOT/lib/libc -fuse-ld=lld'"
 fi
 echo -n " -DLEANC_INTERNAL_FLAGS='-nostdinc -isystem ROOT/include/clang' -DLEANC_CC=ROOT/bin/clang"

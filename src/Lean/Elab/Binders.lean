@@ -6,7 +6,6 @@ Authors: Leonardo de Moura
 import Lean.Elab.Quotation.Precheck
 import Lean.Elab.Term
 import Lean.Elab.BindersUtil
-import Lean.Elab.AuxDiscr
 
 namespace Lean.Elab.Term
 open Meta
@@ -57,6 +56,17 @@ structure BinderView where
   id   : Syntax
   type : Syntax
   bi   : BinderInfo
+
+/--
+Determines the local declaration kind depending on the variable name.
+
+The `__x` in `let __x := 42; body` gets kind `.implDetail`.
+-/
+def kindOfBinderName (binderName : Name) : LocalDeclKind :=
+  if binderName.isImplementationDetail then
+    .implDetail
+  else
+    .default
 
 partial def quoteAutoTactic : Syntax → TermElabM Syntax
   | stx@(.ident ..) => throwErrorAt stx "invalid auto tactic, identifier is not allowed"
@@ -188,7 +198,9 @@ private partial def elabBinderViews (binderViews : Array BinderView) (fvars : Ar
         unless (← isClass? type).isSome do
           throwErrorAt binderView.type "invalid binder annotation, type is not a class instance{indentExpr type}\nuse the command `set_option checkBinderAnnotations false` to disable the check"
         withRef binderView.type <| checkLocalInstanceParameters type
-      withLocalDecl binderView.id.getId binderView.bi type fun fvar => do
+      let id := binderView.id.getId
+      let kind := kindOfBinderName id
+      withLocalDecl id binderView.bi type (kind := kind) fun fvar => do
         addLocalVarInfo binderView.ref fvar
         loop (i+1) (fvars.push (binderView.id, fvar))
     else
@@ -235,17 +247,17 @@ def elabBinder (binder : Syntax) (x : Expr → TermElabM α) : TermElabM α :=
 /-- If `binder` is a `_` or an identifier, return a `bracketedBinder` using `type` otherwise throw an exception. -/
 def expandSimpleBinderWithType (type : Term) (binder : Syntax) : MacroM Syntax :=
   if binder.isOfKind ``hole || binder.isIdent then
-    `(bracketedBinder| ($binder : $type))
+    `(bracketedBinderF| ($binder : $type))
   else
     Macro.throwErrorAt type "unexpected type ascription"
 
-@[builtinMacro Lean.Parser.Term.forall] def expandForall : Macro
+@[builtin_macro Lean.Parser.Term.forall] def expandForall : Macro
   | `(forall $binders* : $ty, $term) => do
     let binders ← binders.mapM (expandSimpleBinderWithType ty)
     `(forall $binders*, $term)
   | _ => Macro.throwUnsupported
 
-@[builtinTermElab «forall»] def elabForall : TermElab := fun stx _ =>
+@[builtin_term_elab «forall»] def elabForall : TermElab := fun stx _ =>
   match stx with
   | `(forall $binders*, $term) =>
     elabBinders binders fun xs => do
@@ -254,13 +266,13 @@ def expandSimpleBinderWithType (type : Term) (binder : Syntax) : MacroM Syntax :
   | _ => throwUnsupportedSyntax
 
 open Lean.Elab.Term.Quotation in
-@[builtinQuotPrecheck Lean.Parser.Term.arrow] def precheckArrow : Precheck
+@[builtin_quot_precheck Lean.Parser.Term.arrow] def precheckArrow : Precheck
   | `($dom:term -> $rng) => do
     precheck dom
     precheck rng
   | _ => throwUnsupportedSyntax
 
-@[builtinTermElab arrow] def elabArrow : TermElab := fun stx _ =>
+@[builtin_term_elab arrow] def elabArrow : TermElab := fun stx _ =>
   match stx with
   | `($dom:term -> $rng) => do
     -- elaborate independently from each other
@@ -273,7 +285,7 @@ open Lean.Elab.Term.Quotation in
 The dependent arrow. `(x : α) → β` is equivalent to `∀ x : α, β`, but we usually
 reserve the latter for propositions. Also written as `Π x : α, β` (the "Pi-type")
 in the literature. -/
-@[builtinTermElab depArrow] def elabDepArrow : TermElab := fun stx _ =>
+@[builtin_term_elab depArrow] def elabDepArrow : TermElab := fun stx _ =>
   -- bracketedBinder `->` term
   let binder := stx[0]
   let term   := stx[2]
@@ -340,36 +352,26 @@ partial def expandFunBinders (binders : Array Syntax) (body : Syntax) : MacroM (
       | ``Lean.Parser.Term.explicitBinder
       | ``Lean.Parser.Term.hole | `ident => loop body (i+1) (newBinders.push binder)
       | ``Lean.Parser.Term.paren =>
-        -- `(` (termParser >> parenSpecial)? `)`
-        -- parenSpecial := (tupleTail <|> typeAscription)?
-        let binderBody := binder[1]
-        if binderBody.isNone then
-          processAsPattern ()
-        else
-          let term    := binderBody[0]
-          let special := binderBody[1]
-          if special.isNone then
-            match (← getFunBinderIds? term) with
-            | some idents =>
-              -- `fun (x ...) ...` ~> `fun (x : _) ...`
-              -- Interpret `(x ...)` as sequence of binders instead of pattern only if none of the idents
-              -- are defined in the global scope. Technically, it would be sufficient to only check the
-              -- first ident to be sure that the syntax cannot possibly be a valid pattern. However, for
-              -- consistency we apply the same check to all idents so that the possibility of shadowing
-              -- a global decl is identical for all of them.
-              if (← idents.allM fun ident => return List.isEmpty (← Macro.resolveGlobalName ident.getId)) then
-                loop body (i+1) (newBinders ++ idents.map (mkExplicitBinder · (mkHole binder)))
-              else
-                processAsPattern ()
-            | none => processAsPattern ()
-          else if special[0].getKind != `Lean.Parser.Term.typeAscription then
-            processAsPattern ()
+        let term := binder[1]
+        match (← getFunBinderIds? term) with
+        | some idents =>
+          -- `fun (x ...) ...` ~> `fun (x : _) ...`
+          -- Interpret `(x ...)` as sequence of binders instead of pattern only if none of the idents
+          -- are defined in the global scope. Technically, it would be sufficient to only check the
+          -- first ident to be sure that the syntax cannot possibly be a valid pattern. However, for
+          -- consistency we apply the same check to all idents so that the possibility of shadowing
+          -- a global decl is identical for all of them.
+          if (← idents.allM fun ident => return List.isEmpty (← Macro.resolveGlobalName ident.getId)) then
+            loop body (i+1) (newBinders ++ idents.map (mkExplicitBinder · (mkHole binder)))
           else
-            -- typeAscription := `:` term
-            let type := special[0][1]
-            match (← getFunBinderIds? term) with
-            | some idents => loop body (i+1) (newBinders ++ idents.map (fun ident => mkExplicitBinder ident type))
-            | none        => processAsPattern ()
+            processAsPattern ()
+        | none => processAsPattern ()
+      | ``Lean.Parser.Term.typeAscription =>
+        let term := binder[1]
+        let type := binder[3].getOptional?.getD (mkHole binder)
+        match (← getFunBinderIds? term) with
+        | some idents => loop body (i+1) (newBinders ++ idents.map (fun ident => mkExplicitBinder ident type))
+        | none        => processAsPattern ()
       | _ => processAsPattern ()
     else
       pure (newBinders, body, false)
@@ -406,22 +408,23 @@ private partial def elabFunBinderViews (binderViews : Array BinderView) (i : Nat
       let fvarId ← mkFreshFVarId
       let fvar  := mkFVar fvarId
       let s     := { s with fvars := s.fvars.push fvar }
-      -- dbgTrace (toString binderView.id.getId ++ " : " ++ toString type)
+      let id    := binderView.id.getId
+      let kind  := kindOfBinderName id
       /-
         We do **not** want to support default and auto arguments in lambda abstractions.
         Example: `fun (x : Nat := 10) => x+1`.
         We do not believe this is an useful feature, and it would complicate the logic here.
       -/
-      let lctx  := s.lctx.mkLocalDecl fvarId binderView.id.getId type binderView.bi
+      let lctx  := s.lctx.mkLocalDecl fvarId id type binderView.bi kind
       addTermInfo' (lctx? := some lctx) (isBinder := true) binderView.ref fvar
       let s ← withRef binderView.id <| propagateExpectedType fvar type s
       let s := { s with lctx }
-      match (← isClass? type) with
-      | none           => elabFunBinderViews binderViews (i+1) s
-      | some className =>
+      match ← isClass? type, kind with
+      | some className, .default =>
         resettingSynthInstanceCache do
           let localInsts := s.localInsts.push { className, fvar := mkFVar fvarId }
           elabFunBinderViews binderViews (i+1) { s with localInsts }
+      | _, _ => elabFunBinderViews binderViews (i+1) s
   else
     pure s
 
@@ -459,16 +462,17 @@ def expandWhereDeclsOpt (whereDeclsOpt : Syntax) (body : Syntax) : MacroM Syntax
 /--
  Helper function for `expandMatchAltsIntoMatch`.
 -/
-private def expandMatchAltsIntoMatchAux (matchAlts : Syntax) (isTactic : Bool) (useExplicit : Bool) : Nat → Array Syntax → MacroM Syntax
-  | 0,   discrs => do
+private def expandMatchAltsIntoMatchAux (matchAlts : Syntax) (isTactic : Bool) (useExplicit : Bool) : Nat → Array Syntax → Array Ident → MacroM Syntax
+  | 0,   discrs, xs => do
     if isTactic then
       `(tactic|match $[$discrs:term],* with $matchAlts:matchAlts)
     else
-      `(match $[$discrs:term],* with $matchAlts:matchAlts)
-  | n+1, discrs => withFreshMacroScope do
-    let x ← mkAuxFunDiscr -- Recall that identifiers created with `mkAuxFunDiscr` are cleared by the `match` elaborator
-    let d ← `(@$x:ident) -- See comment below
-    let body ← expandMatchAltsIntoMatchAux matchAlts isTactic useExplicit n (discrs.push d)
+      let stx ← `(match $[$discrs:term],* with $matchAlts:matchAlts)
+      clearInMatch stx xs
+  | n+1, discrs, xs => withFreshMacroScope do
+    let x ← `(x) -- If this were implementation-detail, the `contradiction` tactic used by match would not find it.
+    let d ← `(@$x:ident)
+    let body ← expandMatchAltsIntoMatchAux matchAlts isTactic useExplicit n (discrs.push d) (xs.push x)
     if isTactic then
       `(tactic| intro $x:term; $body:tactic)
     else if useExplicit then
@@ -529,10 +533,10 @@ private def expandMatchAltsIntoMatchAux (matchAlts : Syntax) (isTactic : Bool) (
   The two definitions should be elaborated without errors and be equivalent.
  -/
 def expandMatchAltsIntoMatch (ref : Syntax) (matchAlts : Syntax) (useExplicit := true) : MacroM Syntax :=
-  withRef ref <| expandMatchAltsIntoMatchAux matchAlts (isTactic := false) (useExplicit := useExplicit) (getMatchAltsNumPatterns matchAlts) #[]
+  withRef ref <| expandMatchAltsIntoMatchAux matchAlts (isTactic := false) (useExplicit := useExplicit) (getMatchAltsNumPatterns matchAlts) #[] #[]
 
 def expandMatchAltsIntoMatchTactic (ref : Syntax) (matchAlts : Syntax) : MacroM Syntax :=
-  withRef ref <| expandMatchAltsIntoMatchAux matchAlts (isTactic := true) (useExplicit := false) (getMatchAltsNumPatterns matchAlts) #[]
+  withRef ref <| expandMatchAltsIntoMatchAux matchAlts (isTactic := true) (useExplicit := false) (getMatchAltsNumPatterns matchAlts) #[] #[]
 
 /--
   Similar to `expandMatchAltsIntoMatch`, but supports an optional `where` clause.
@@ -568,19 +572,18 @@ def expandMatchAltsWhereDecls (matchAltsWhereDecls : Syntax) : MacroM Syntax :=
   let rec loop (i : Nat) (discrs : Array Syntax) : MacroM Syntax :=
     match i with
     | 0   => do
-      let matchStx ← `(match $[$discrs:term],* with $matchAlts:matchAlts)
+      let matchStx ← `(match $[@$discrs:term],* with $matchAlts:matchAlts)
+      let matchStx ← clearInMatch matchStx discrs
       if whereDeclsOpt.isNone then
         return matchStx
       else
         expandWhereDeclsOpt whereDeclsOpt matchStx
     | n+1 => withFreshMacroScope do
-      -- See comment at `expandMatchAltsIntoMatch`,
-      let d ← mkAuxFunDiscr
-      let body ← loop n (discrs.push (← `(@$d:ident)))
-      `(@fun $d:ident => $body)
+      let body ← loop n (discrs.push (← `(x)))
+      `(@fun x => $body)
   loop (getMatchAltsNumPatterns matchAlts) #[]
 
-@[builtinMacro Parser.Term.fun] partial def expandFun : Macro
+@[builtin_macro Parser.Term.fun] partial def expandFun : Macro
   | `(fun $binders* : $ty => $body) => do
     let binders ← binders.mapM (expandSimpleBinderWithType ty)
     `(fun $binders* => $body)
@@ -593,13 +596,13 @@ def expandMatchAltsWhereDecls (matchAltsWhereDecls : Syntax) : MacroM Syntax :=
   | stx@`(fun $m:matchAlts) => expandMatchAltsIntoMatch stx m (useExplicit := false)
   | _ => Macro.throwUnsupported
 
-@[builtinMacro Parser.Term.explicit] partial def expandExplicitFun : Macro := fun stx =>
+@[builtin_macro Parser.Term.explicit] partial def expandExplicitFun : Macro := fun stx =>
   match stx with
   | `(@fun $m:matchAlts) => expandMatchAltsIntoMatch stx[1] m (useExplicit := true)
   | _ => Macro.throwUnsupported
 
 open Lean.Elab.Term.Quotation in
-@[builtinQuotPrecheck Lean.Parser.Term.fun] def precheckFun : Precheck
+@[builtin_quot_precheck Lean.Parser.Term.fun] def precheckFun : Precheck
   | `(fun $binders* $[: $ty?]? => $body) => do
     let (binders, body, _) ← liftMacroM <| expandFunBinders binders body
     let mut ids := #[]
@@ -610,7 +613,7 @@ open Lean.Elab.Term.Quotation in
     Quotation.withNewLocals ids <| precheck body
   | _ => throwUnsupportedSyntax
 
-@[builtinTermElab «fun»] partial def elabFun : TermElab := fun stx expectedType? =>
+@[builtin_term_elab «fun»] partial def elabFun : TermElab := fun stx expectedType? =>
   match stx with
   | `(fun $binders* => $body) => do
     -- We can assume all `match` binders have been iteratively expanded by the above macro here, though
@@ -654,15 +657,16 @@ def elabLetDeclAux (id : Syntax) (binders : Array Syntax) (typeStx : Syntax) (va
        -/
       let val  ← mkLambdaFVars fvars val (usedLetOnly := false)
       pure (type, val, binders)
+  let kind := kindOfBinderName id.getId
   trace[Elab.let.decl] "{id.getId} : {type} := {val}"
   let result ← if useLetExpr then
-    withLetDecl id.getId type val fun x => do
+    withLetDecl id.getId (kind := kind) type val fun x => do
       addLocalVarInfo id x
       let body ← elabTermEnsuringType body expectedType?
       let body ← instantiateMVars body
       mkLetFVars #[x] body (usedLetOnly := usedLetOnly)
   else
-    let f ← withLocalDecl id.getId BinderInfo.default type fun x => do
+    let f ← withLocalDecl id.getId (kind := kind) .default type fun x => do
       addLocalVarInfo id x
       let body ← elabTermEnsuringType body expectedType?
       let body ← instantiateMVars body
@@ -734,16 +738,16 @@ def elabLetDeclCore (stx : Syntax) (expectedType? : Option Expr) (useLetExpr : B
   else
     throwUnsupportedSyntax
 
-@[builtinTermElab «let»] def elabLetDecl : TermElab :=
+@[builtin_term_elab «let»] def elabLetDecl : TermElab :=
   fun stx expectedType? => elabLetDeclCore stx expectedType? (useLetExpr := true) (elabBodyFirst := false) (usedLetOnly := false)
 
-@[builtinTermElab «let_fun»] def elabLetFunDecl : TermElab :=
+@[builtin_term_elab «let_fun»] def elabLetFunDecl : TermElab :=
   fun stx expectedType? => elabLetDeclCore stx expectedType? (useLetExpr := false) (elabBodyFirst := false) (usedLetOnly := false)
 
-@[builtinTermElab «let_delayed»] def elabLetDelayedDecl : TermElab :=
+@[builtin_term_elab «let_delayed»] def elabLetDelayedDecl : TermElab :=
   fun stx expectedType? => elabLetDeclCore stx expectedType? (useLetExpr := true) (elabBodyFirst := true) (usedLetOnly := false)
 
-@[builtinTermElab «let_tmp»] def elabLetTmpDecl : TermElab :=
+@[builtin_term_elab «let_tmp»] def elabLetTmpDecl : TermElab :=
   fun stx expectedType? => elabLetDeclCore stx expectedType? (useLetExpr := true) (elabBodyFirst := false) (usedLetOnly := true)
 
 builtin_initialize registerTraceClass `Elab.let

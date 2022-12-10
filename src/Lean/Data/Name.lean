@@ -100,8 +100,11 @@ def quickLt (n₁ n₂ : Name) : Bool :=
 @[inline] protected def hasLtQuick : LT Name :=
   ⟨fun a b => Name.quickLt a b = true⟩
 
-@[inline] instance : DecidableRel (@LT.lt Name Name.hasLtQuick) :=
-  inferInstanceAs (DecidableRel (fun a b => Name.quickLt a b = true))
+@[inline] def Name.decLt : DecidableRel (@LT.lt Name Name.hasLtQuick) :=
+  inferInstanceAs (DecidableRel fun a b => Name.quickLt a b = true)
+
+instance : DecidableRel (@LT.lt Name Name.hasLtQuick) :=
+  Name.decLt
 
 /-- The frontend does not allow user declarations to start with `_` in any of its parts.
    We use name parts starting with `_` internally to create auxiliary names (e.g., `_private`). -/
@@ -109,6 +112,17 @@ def isInternal : Name → Bool
   | str p s => s.get 0 == '_' || isInternal p
   | num p _ => isInternal p
   | _       => false
+
+/--
+Checks whether the name is an implementation-detail hypothesis name.
+
+Implementation-detail hypothesis names start with a double underscore.
+-/
+def isImplementationDetail : Name → Bool
+  | str anonymous s => s.startsWith "__"
+  | num p _ => p.isImplementationDetail
+  | str p _ => p.isImplementationDetail
+  | anonymous => false
 
 def isAtomic : Name → Bool
   | anonymous       => true
@@ -127,6 +141,21 @@ def isStr : Name → Bool
 def isNum : Name → Bool
   | num .. => true
   | _      => false
+
+/--
+Return `true` if `n` contains a string part `s` that satifies `f`.
+
+Examples:
+```
+#eval (`foo.bla).anyS (·.startsWith "fo") -- true
+#eval (`foo.bla).anyS (·.startsWith "boo") -- false
+```
+-/
+def anyS (n : Name) (f : String → Bool) : Bool :=
+  match n with
+  | .str p s => f s || p.anyS f
+  | .num p _ => p.anyS f
+  | _ => false
 
 end Name
 end Lean

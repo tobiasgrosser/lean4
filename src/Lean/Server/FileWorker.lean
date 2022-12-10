@@ -406,6 +406,7 @@ section MessageHandling
          srcSearchPath
          doc := st.doc
          hLog := ctx.hLog
+         hOut := ctx.hOut
          initParams := ctx.initParams }
      let t? ← EIO.toIO' <| handleLspRequest method params rc
      let t₁ ← match t? with
@@ -449,7 +450,7 @@ section MainLoop
       handleRequest id method (toJson params)
       mainLoop
     | Message.notification "exit" none =>
-      let doc := (←get).doc
+      let doc := st.doc
       doc.cancelTk.set
       return ()
     | Message.notification method (some params) =>

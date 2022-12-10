@@ -9,17 +9,17 @@ import Lean.Attributes
 namespace Lean.Compiler
 
 inductive InlineAttributeKind where
-  | inline | noinline | macroInline | inlineIfReduce
-  deriving Inhabited, BEq
+  | inline | noinline | macroInline | inlineIfReduce | alwaysInline
+  deriving Inhabited, BEq, Hashable
 
 /--
-  This is an approximate test for testing whether `declName` can be annotated with the `[macroInline]` attribute or not.
+  This is an approximate test for testing whether `declName` can be annotated with the `[macro_inline]` attribute or not.
 -/
 private def isValidMacroInline (declName : Name) : CoreM Bool := do
   let .defnInfo info ← getConstInfo declName
     | return false
   unless info.all.length = 1 do
-    -- We do not allow `[macroInline]` attributes at mutual recursive definitions
+    -- We do not allow `[macro_inline]` attributes at mutual recursive definitions
     return false
   let env ← getEnv
   let isRec (declName' : Name) : Bool :=
@@ -32,11 +32,12 @@ private def isValidMacroInline (declName : Name) : CoreM Bool := do
   return true
 
 builtin_initialize inlineAttrs : EnumAttributes InlineAttributeKind ←
-  registerEnumAttributes `inlineAttrs
-    [(`inline, "mark definition to always be inlined", InlineAttributeKind.inline),
-     (`inlineIfReduce, "mark definition to be inlined when resultant term after reduction is not a `cases_on` application", InlineAttributeKind.inlineIfReduce),
-     (`noinline, "mark definition to never be inlined", InlineAttributeKind.noinline),
-     (`macroInline, "mark definition to always be inlined before ANF conversion", InlineAttributeKind.macroInline)]
+  registerEnumAttributes
+    [(`inline, "mark definition to be inlined", .inline),
+     (`inline_if_reduce, "mark definition to be inlined when resultant term after reduction is not a `cases_on` application", .inlineIfReduce),
+     (`noinline, "mark definition to never be inlined", .noinline),
+     (`macro_inline, "mark definition to always be inlined before ANF conversion", .macroInline),
+     (`always_inline, "mark definition to be always inlined", .alwaysInline)]
     fun declName kind => do
       ofExcept <| checkIsDefinition (← getEnv) declName
       if kind matches .macroInline then
@@ -46,22 +47,28 @@ builtin_initialize inlineAttrs : EnumAttributes InlineAttributeKind ←
 def setInlineAttribute (env : Environment) (declName : Name) (kind : InlineAttributeKind) : Except String Environment :=
   inlineAttrs.setValue env declName kind
 
+def getInlineAttribute? (env : Environment) (declName : Name) : Option InlineAttributeKind :=
+  inlineAttrs.getValue env declName
+
 private def hasInlineAttrCore (env : Environment) (kind : InlineAttributeKind) (declName : Name) : Bool :=
   match inlineAttrs.getValue env declName with
   | some k => kind == k
   | _ => false
 
 abbrev hasInlineAttribute (env : Environment) (declName : Name) : Bool :=
-  hasInlineAttrCore env InlineAttributeKind.inline declName
+  hasInlineAttrCore env .inline declName
 
 def hasInlineIfReduceAttribute (env : Environment) (declName : Name) : Bool :=
-  hasInlineAttrCore env InlineAttributeKind.inlineIfReduce declName
+  hasInlineAttrCore env .inlineIfReduce declName
 
 def hasNoInlineAttribute (env : Environment) (declName : Name) : Bool :=
-  hasInlineAttrCore env InlineAttributeKind.noinline declName
+  hasInlineAttrCore env .noinline declName
 
 def hasMacroInlineAttribute (env : Environment) (declName : Name) : Bool :=
-  hasInlineAttrCore env InlineAttributeKind.macroInline declName
+  hasInlineAttrCore env .macroInline declName
+
+abbrev hasAlwaysInlineAttribute (env : Environment) (declName : Name) : Bool :=
+  hasInlineAttrCore env .alwaysInline declName
 
 -- TODO: delete rest of the file after we have old code generator
 

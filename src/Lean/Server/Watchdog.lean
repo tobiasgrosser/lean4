@@ -253,8 +253,11 @@ section ServerM
         if exitCode = 0 then
           -- Worker was terminated
           fw.errorPendingRequests o ErrorCode.contentModified
-            ("The file worker has been terminated. Either the header has changed,"
+            (s!"The file worker for {fw.doc.meta.uri} has been terminated. Either the header has changed,"
             ++ " or the file was closed, or the server is shutting down.")
+          -- one last message to clear the diagnostics for this file so that stale errors
+          -- do not remain in the editor forever.
+          publishDiagnostics fw.doc.meta #[] o
           return WorkerEvent.terminated
         else
           -- Worker crashed
@@ -602,6 +605,11 @@ section MainLoop
       | Message.request id method (some params) =>
         handleRequest id method (toJson params)
         mainLoop (←runClientTask)
+      | Message.response .. =>
+        -- TODO: handle client responses
+        mainLoop (←runClientTask)
+      | Message.responseError _ _ e .. =>
+        throwServerError s!"Unhandled response error: {e}"
       | Message.notification "textDocument/didChange" (some params) =>
         let p ← parseParams DidChangeTextDocumentParams (toJson params)
         let fw ← findFileWorker! p.textDocument.uri
@@ -639,8 +647,6 @@ section MainLoop
         mainLoop (←runClientTask)
       | Message.notification method (some params) =>
         handleNotification method (toJson params)
-        mainLoop (←runClientTask)
-      | Message.response "register_ilean_watcher" _      =>
         mainLoop (←runClientTask)
       | _ => throwServerError "Got invalid JSON-RPC message"
     | ServerEvent.clientError e => throw e
@@ -686,6 +692,10 @@ def mkLeanServerCapabilities : ServerCapabilities := {
     }
     full  := true
     range := true
+  }
+  codeActionProvider? := some {
+    resolveProvider? := true,
+    codeActionKinds? := some #["quickfix", "refactor"]
   }
 }
 

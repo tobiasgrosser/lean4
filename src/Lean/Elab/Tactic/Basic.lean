@@ -17,10 +17,9 @@ def admitGoal (mvarId : MVarId) : MetaM Unit :=
 def goalsToMessageData (goals : List MVarId) : MessageData :=
   MessageData.joinSep (goals.map MessageData.ofGoal) m!"\n\n"
 
-def Term.reportUnsolvedGoals (goals : List MVarId) : TermElabM Unit :=
-  withPPShowLetValues <| withPPInaccessibleNames do
-    logError <| MessageData.tagged `Tactic.unsolvedGoals <| m!"unsolved goals\n{goalsToMessageData goals}"
-    goals.forM fun mvarId => admitGoal mvarId
+def Term.reportUnsolvedGoals (goals : List MVarId) : TermElabM Unit := do
+  logError <| MessageData.tagged `Tactic.unsolvedGoals <| m!"unsolved goals\n{goalsToMessageData goals}"
+  goals.forM fun mvarId => admitGoal mvarId
 
 namespace Tactic
 
@@ -41,9 +40,16 @@ structure SavedState where
 abbrev TacticM := ReaderT Context $ StateRefT State TermElabM
 abbrev Tactic  := Syntax → TacticM Unit
 
--- Make the compiler generate specialized `pure`/`bind` so we do not have to optimize through the
--- whole monad stack at every use site. May eventually be covered by `deriving`.
-instance : Monad TacticM := let i := inferInstanceAs (Monad TacticM); { pure := i.pure, bind := i.bind }
+/-
+Make the compiler generate specialized `pure`/`bind` so we do not have to optimize through the
+whole monad stack at every use site. May eventually be covered by `deriving`.
+
+See comment at `Monad TermElabM`
+-/
+@[always_inline]
+instance : Monad TacticM :=
+  let i := inferInstanceAs (Monad TacticM);
+  { pure := i.pure, bind := i.bind }
 
 def getGoals : TacticM (List MVarId) :=
   return (← get).goals
@@ -97,9 +103,9 @@ protected def getCurrMacroScope : TacticM MacroScope := do pure (← readThe Cor
 protected def getMainModule     : TacticM Name       := do pure (← getEnv).mainModule
 
 unsafe def mkTacticAttribute : IO (KeyedDeclsAttribute Tactic) :=
-  mkElabAttribute Tactic `Lean.Elab.Tactic.tacticElabAttribute `builtinTactic `tactic `Lean.Parser.Tactic `Lean.Elab.Tactic.Tactic "tactic"
+  mkElabAttribute Tactic `builtin_tactic `tactic `Lean.Parser.Tactic `Lean.Elab.Tactic.Tactic "tactic" `Lean.Elab.Tactic.tacticElabAttribute
 
-@[builtinInit mkTacticAttribute] opaque tacticElabAttribute : KeyedDeclsAttribute Tactic
+@[builtin_init mkTacticAttribute] opaque tacticElabAttribute : KeyedDeclsAttribute Tactic
 
 def mkTacticInfo (mctxBefore : MetavarContext) (goalsBefore : List MVarId) (stx : Syntax) : TacticM Info :=
   return Info.ofTacticInfo {
@@ -336,7 +342,7 @@ def ensureHasNoMVars (e : Expr) : TacticM Unit := do
   if e.hasExprMVar then
     throwError "tactic failed, resulting expression contains metavariables{indentExpr e}"
 
-/-- Close main goal using the given expression. If `checkUnassigned == true`, then `val` must not contain unassinged metavariables. -/
+/-- Close main goal using the given expression. If `checkUnassigned == true`, then `val` must not contain unassigned metavariables. -/
 def closeMainGoal (val : Expr) (checkUnassigned := true): TacticM Unit := do
   if checkUnassigned then
     ensureHasNoMVars val

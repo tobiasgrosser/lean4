@@ -132,13 +132,10 @@ abbrev Unit : Type := PUnit
 `Unit.unit : Unit` is the canonical element of the unit type.
 It can also be written as `()`.
 -/
-@[matchPattern] abbrev Unit.unit : Unit := PUnit.unit
+@[match_pattern] abbrev Unit.unit : Unit := PUnit.unit
 
 /-- Marker for information that has been erased by the code generator. -/
 unsafe axiom lcErased : Type
-
-/-- "Any" type in the simpler type system used by the code generator. -/
-unsafe axiom lcAny : Type
 
 /--
 Auxiliary unsafe constant used by the Compiler when erasing proofs from code.
@@ -223,7 +220,7 @@ instruction: it is **undefined behavior** to run, but it will probably print
 "unreachable code". (You would need to construct a proof of false to run it
 anyway, which you can only do using `sorry` or unsound axioms.)
 -/
-@[macroInline] def False.elim {C : Sort u} (h : False) : C :=
+@[macro_inline] def False.elim {C : Sort u} (h : False) : C :=
   h.rec
 
 /--
@@ -233,7 +230,7 @@ example (hp : p) (hnp : ¬p) : q := absurd hp hnp
 ```
 For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
-@[macroInline] def absurd {a : Prop} {b : Sort v} (h₁ : a) (h₂ : Not a) : b :=
+@[macro_inline] def absurd {a : Prop} {b : Sort v} (h₁ : a) (h₂ : Not a) : b :=
   (h₂ h₁).rec
 
 /--
@@ -281,7 +278,7 @@ the statement of the theorem is `a = a`, lean will allow anything that is
 definitionally equal to that type. So, for instance, `2 + 2 = 4` is proven in
 lean by `rfl`, because both sides are the same up to definitional equality.
 -/
-@[matchPattern] def rfl {α : Sort u} {a : α} : Eq a a := Eq.refl a
+@[match_pattern] def rfl {α : Sort u} {a : α} : Eq a a := Eq.refl a
 
 /-- `id x = x`, as a `@[simp]` lemma. -/
 @[simp] theorem id_eq (a : α) : Eq (id a) a := rfl
@@ -336,7 +333,7 @@ definitionally sometimes there isn't anything better you can do.
 
 For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
-@[macroInline] def cast {α β : Sort u} (h : Eq α β) (a : α) : β :=
+@[macro_inline] def cast {α β : Sort u} (h : Eq α β) (a : α) : β :=
   h.rec a
 
 /--
@@ -448,7 +445,7 @@ inductive HEq : {α : Sort u} → α → {β : Sort u} → β → Prop where
   | refl (a : α) : HEq a a
 
 /-- A version of `HEq.refl` with an implicit argument. -/
-@[matchPattern] protected def HEq.rfl {α : Sort u} {a : α} : HEq a a :=
+@[match_pattern] protected def HEq.rfl {α : Sort u} {a : α} : HEq a a :=
   HEq.refl a
 
 theorem eq_of_heq {α : Sort u} {a a' : α} (h : HEq a a') : Eq a a' :=
@@ -617,7 +614,7 @@ in the expression. A synthetic `sorry` acts like a regular one, except that it
 suppresses follow-up errors in order to prevent one error from causing a cascade
 of other errors because the desired term was not constructed.
 -/
-@[extern "lean_sorry", neverExtract]
+@[extern "lean_sorry", never_extract]
 axiom sorryAx (α : Sort u) (synthetic := false) : α
 
 theorem eq_false_of_ne_true : {b : Bool} → Not (Eq b true) → Eq b false
@@ -799,7 +796,7 @@ Convert a decidable proposition into a boolean value.
 If `p : Prop` is decidable, then `decide p : Bool` is the boolean value
 which is `true` if `p` is true and `false` if `p` is false.
 -/
-@[inlineIfReduce, nospecialize] def Decidable.decide (p : Prop) [h : Decidable p] : Bool :=
+@[inline_if_reduce, nospecialize] def Decidable.decide (p : Prop) [h : Decidable p] : Bool :=
   h.casesOn (fun _ => false) (fun _ => true)
 
 export Decidable (isTrue isFalse decide)
@@ -847,12 +844,16 @@ theorem of_decide_eq_self_eq_true [inst : DecidableEq α] (a : α) : Eq (decide 
   | isTrue  _  => rfl
   | isFalse h₁ => absurd rfl h₁
 
-@[inline] instance : DecidableEq Bool :=
-  fun a b => match a, b with
+/-- Decidable equality for Bool -/
+@[inline] def Bool.decEq (a b : Bool) : Decidable (Eq a b) :=
+   match a, b with
    | false, false => isTrue rfl
    | false, true  => isFalse (fun h => Bool.noConfusion h)
    | true, false  => isFalse (fun h => Bool.noConfusion h)
    | true, true   => isTrue rfl
+
+@[inline] instance : DecidableEq Bool :=
+   Bool.decEq
 
 /--
 `BEq α` is a typeclass for supplying a boolean-valued equality relation on
@@ -886,7 +887,7 @@ to avoid the bounds check inside the if branch. (Of course in this case we have 
 lifted the check into an explicit `if`, but we could also use this proof multiple times
 or derive `i < arr.size` from some other proposition that we are checking in the `if`.)
 -/
-@[macroInline] def dite {α : Sort u} (c : Prop) [h : Decidable c] (t : c → α) (e : Not c → α) : α :=
+@[macro_inline] def dite {α : Sort u} (c : Prop) [h : Decidable c] (t : c → α) (e : Not c → α) : α :=
   h.casesOn e t
 
 /-! # if-then-else -/
@@ -903,15 +904,15 @@ function is problematic in that it would require `t` and `e` to be evaluated bef
 calling the `ite` function, which would cause both sides of the `if` to be evaluated.
 Even if the result is discarded, this would be a big performance problem,
 and is undesirable for users in any case. To resolve this, `ite` is marked as
-`@[macroInline]`, which means that it is unfolded during code generation, and
+`@[macro_inline]`, which means that it is unfolded during code generation, and
 the definition of the function uses `fun _ => t` and `fun _ => e` so this recovers
 the expected "lazy" behavior of `if`: the `t` and `e` arguments delay evaluation
 until `c` is known.
 -/
-@[macroInline] def ite {α : Sort u} (c : Prop) [h : Decidable c] (t e : α) : α :=
+@[macro_inline] def ite {α : Sort u} (c : Prop) [h : Decidable c] (t e : α) : α :=
   h.casesOn (fun _ => e) (fun _ => t)
 
-@[macroInline] instance {p q} [dp : Decidable p] [dq : Decidable q] : Decidable (And p q) :=
+@[macro_inline] instance {p q} [dp : Decidable p] [dq : Decidable q] : Decidable (And p q) :=
   match dp with
   | isTrue  hp =>
     match dq with
@@ -920,7 +921,7 @@ until `c` is known.
   | isFalse hp =>
     isFalse (fun h => hp (And.left h))
 
-@[macroInline] instance [dp : Decidable p] [dq : Decidable q] : Decidable (Or p q) :=
+@[macro_inline] instance [dp : Decidable p] [dq : Decidable q] : Decidable (Or p q) :=
   match dp with
   | isTrue  hp => isTrue (Or.inl hp)
   | isFalse hp =>
@@ -941,10 +942,10 @@ instance [dp : Decidable p] : Decidable (Not p) :=
 /--
 `cond b x y` is the same as `if b then x else y`, but optimized for a
 boolean condition. It can also be written as `bif b then x else y`.
-This is `@[macroInline]` because `x` and `y` should not
+This is `@[macro_inline]` because `x` and `y` should not
 be eagerly evaluated (see `ite`).
 -/
-@[macroInline] def cond {α : Type u} (c : Bool) (x y : α) : α :=
+@[macro_inline] def cond {α : Type u} (c : Bool) (x y : α) : α :=
   match c with
   | true  => x
   | false => y
@@ -952,10 +953,10 @@ be eagerly evaluated (see `ite`).
 /--
 `or x y`, or `x || y`, is the boolean "or" operation (not to be confused
 with `Or : Prop → Prop → Prop`, which is the propositional connective).
-It is `@[macroInline]` because it has C-like short-circuiting behavior:
+It is `@[macro_inline]` because it has C-like short-circuiting behavior:
 if `x` is true then `y` is not evaluated.
 -/
-@[macroInline] def or (x y : Bool) : Bool :=
+@[macro_inline] def or (x y : Bool) : Bool :=
   match x with
   | true  => true
   | false => y
@@ -963,10 +964,10 @@ if `x` is true then `y` is not evaluated.
 /--
 `and x y`, or `x && y`, is the boolean "and" operation (not to be confused
 with `And : Prop → Prop → Prop`, which is the propositional connective).
-It is `@[macroInline]` because it has C-like short-circuiting behavior:
+It is `@[macro_inline]` because it has C-like short-circuiting behavior:
 if `x` is false then `y` is not evaluated.
 -/
-@[macroInline] def and (x y : Bool) : Bool :=
+@[macro_inline] def and (x y : Bool) : Bool :=
   match x with
   | false => false
   | true  => y
@@ -1041,7 +1042,7 @@ class OfNat (α : Type u) (_ : Nat) where
   `α`. -/
   ofNat : α
 
-@[defaultInstance 100] /- low prio -/
+@[default_instance 100] /- low prio -/
 instance (n : Nat) : OfNat Nat n where
   ofNat := n
 
@@ -1060,19 +1061,31 @@ class LT (α : Type u) where
 /-- `a > b` is an abbreviation for `b < a`. -/
 @[reducible] def GT.gt {α : Type u} [LT α] (a b : α) : Prop := LT.lt b a
 
-/--
-`max a b` is the maximum of `a` and `b`. It is defined simply as
-`if b < a then a else b`, and works as long as `<` is decidable.
--/
-@[inline] def max [LT α] [DecidableRel (@LT.lt α _)] (a b : α) : α :=
-  ite (LT.lt b a) a b
+/-- `Max α` is the typeclass which supports the operation `max x y` where `x y : α`.-/
+class Max (α : Type u) where
+  /-- The maximum operation: `max x y`. -/
+  max : α → α → α
 
-/--
-`min a b` is the minimum of `a` and `b`. It is defined simply as
-`if a ≤ b then a else b`, and works as long as `≤` is decidable.
--/
-@[inline] def min [LE α] [DecidableRel (@LE.le α _)] (a b : α) : α :=
-  ite (LE.le a b) a b
+export Max (max)
+
+/-- Implementation of the `max` operation using `≤`. -/
+-- Marked inline so that `min x y + max x y` can be optimized to a single branch.
+@[inline]
+def maxOfLe [LE α] [DecidableRel (@LE.le α _)] : Max α where
+  max x y := ite (LE.le x y) y x
+
+/-- `Min α` is the typeclass which supports the operation `min x y` where `x y : α`.-/
+class Min (α : Type u) where
+  /-- The minimum operation: `min x y`. -/
+  min : α → α → α
+
+export Min (min)
+
+/-- Implementation of the `min` operation using `≤`. -/
+-- Marked inline so that `min x y + max x y` can be optimized to a single branch.
+@[inline]
+def minOfLe [LE α] [DecidableRel (@LE.le α _)] : Min α where
+  min x y := ite (LE.le x y) x y
 
 /--
 Transitive chaining of proofs, used e.g. by `calc`.
@@ -1325,59 +1338,59 @@ class ShiftRight (α : Type u) where
   /-- The implementation of `a >>> b : α`. See `HShiftRight`. -/
   shiftRight : α → α → α
 
-@[defaultInstance]
+@[default_instance]
 instance [Add α] : HAdd α α α where
   hAdd a b := Add.add a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Sub α] : HSub α α α where
   hSub a b := Sub.sub a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Mul α] : HMul α α α where
   hMul a b := Mul.mul a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Div α] : HDiv α α α where
   hDiv a b := Div.div a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Mod α] : HMod α α α where
   hMod a b := Mod.mod a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Pow α β] : HPow α β α where
   hPow a b := Pow.pow a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Append α] : HAppend α α α where
   hAppend a b := Append.append a b
 
-@[defaultInstance]
+@[default_instance]
 instance [OrElse α] : HOrElse α α α where
   hOrElse a b := OrElse.orElse a b
 
-@[defaultInstance]
+@[default_instance]
 instance [AndThen α] : HAndThen α α α where
   hAndThen a b := AndThen.andThen a b
 
-@[defaultInstance]
+@[default_instance]
 instance [AndOp α] : HAnd α α α where
   hAnd a b := AndOp.and a b
 
-@[defaultInstance]
+@[default_instance]
 instance [Xor α] : HXor α α α where
   hXor a b := Xor.xor a b
 
-@[defaultInstance]
+@[default_instance]
 instance [OrOp α] : HOr α α α where
   hOr a b := OrOp.or a b
 
-@[defaultInstance]
+@[default_instance]
 instance [ShiftLeft α] : HShiftLeft α α α where
   hShiftLeft a b := ShiftLeft.shiftLeft a b
 
-@[defaultInstance]
+@[default_instance]
 instance [ShiftRight α] : HShiftRight α α α where
   hShiftRight a b := ShiftRight.shiftRight a b
 
@@ -1413,7 +1426,7 @@ instance : Add Nat where
 
 /- We mark the following definitions as pattern to make sure they can be used in recursive equations,
    and reduced by the equation Compiler. -/
-attribute [matchPattern] Nat.add Add.add HAdd.hAdd Neg.neg
+attribute [match_pattern] Nat.add Add.add HAdd.hAdd Neg.neg
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1887,6 +1900,8 @@ def UInt32.decLe (a b : UInt32) : Decidable (LE.le a b) :=
 
 instance (a b : UInt32) : Decidable (LT.lt a b) := UInt32.decLt a b
 instance (a b : UInt32) : Decidable (LE.le a b) := UInt32.decLe a b
+instance : Max UInt32 := maxOfLe
+instance : Min UInt32 := minOfLe
 
 /-- The size of type `UInt64`, that is, `2^64 = 18446744073709551616`. -/
 def UInt64.size : Nat := 18446744073709551616
@@ -2033,7 +2048,7 @@ def Char.ofNatAux (n : @& Nat) (h : n.isValidChar) : Char :=
 Convert a `Nat` into a `Char`. If the `Nat` does not encode a valid unicode scalar value,
 `'\0'` is returned instead.
 -/
-@[noinline, matchPattern]
+@[noinline, match_pattern]
 def Char.ofNat (n : Nat) : Char :=
   dite (n.isValidChar)
     (fun h => Char.ofNatAux n h)
@@ -2113,10 +2128,10 @@ instance {α} : Inhabited (Option α) where
 Get with default. If `opt : Option α` and `dflt : α`, then `opt.getD dflt`
 returns `a` if `opt = some a` and `dflt` otherwise.
 
-This function is `@[macroInline]`, so `dflt` will not be evaluated unless
+This function is `@[macro_inline]`, so `dflt` will not be evaluated unless
 `opt` turns out to be `none`.
 -/
-@[macroInline] def Option.getD : Option α → α → α
+@[macro_inline] def Option.getD : Option α → α → α
   | some x, _ => x
   | none,   e => e
 
@@ -2384,7 +2399,7 @@ will prevent the the actual monad from being "copied" to the code being speciali
 When we reimplement the specializer, we may consider copying `inst` if it also
 occurs outside binders or if it is an instance.
 -/
-@[neverExtract, extern "lean_panic_fn"]
+@[never_extract, extern "lean_panic_fn"]
 def panicCore {α : Type u} [Inhabited α] (msg : String) : α := default
 
 /--
@@ -2395,10 +2410,10 @@ and returns `default`. It is primarily intended for debugging in pure contexts,
 and assertion failures.
 
 Because this is a pure function with side effects, it is marked as
-`@[neverExtract]` so that the compiler will not perform common sub-expression
+`@[never_extract]` so that the compiler will not perform common sub-expression
 elimination and other optimizations that assume that the expression is pure.
 -/
-@[noinline, neverExtract]
+@[noinline, never_extract]
 def panic {α : Type u} [Inhabited α] (msg : String) : α :=
   panicCore msg
 
@@ -2511,31 +2526,31 @@ def Array.mkArray1 {α : Type u} (a₁ : α) : Array α :=
 
 /-- Create array `#[a₁, a₂]` -/
 def Array.mkArray2 {α : Type u} (a₁ a₂ : α) : Array α :=
-  ((mkEmpty 1).push a₁).push a₂
+  ((mkEmpty 2).push a₁).push a₂
 
 /-- Create array `#[a₁, a₂, a₃]` -/
 def Array.mkArray3 {α : Type u} (a₁ a₂ a₃ : α) : Array α :=
-  (((mkEmpty 1).push a₁).push a₂).push a₃
+  (((mkEmpty 3).push a₁).push a₂).push a₃
 
 /-- Create array `#[a₁, a₂, a₃, a₄]` -/
 def Array.mkArray4 {α : Type u} (a₁ a₂ a₃ a₄ : α) : Array α :=
-  ((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄
+  ((((mkEmpty 4).push a₁).push a₂).push a₃).push a₄
 
 /-- Create array `#[a₁, a₂, a₃, a₄, a₅]` -/
 def Array.mkArray5 {α : Type u} (a₁ a₂ a₃ a₄ a₅ : α) : Array α :=
-  (((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅
+  (((((mkEmpty 5).push a₁).push a₂).push a₃).push a₄).push a₅
 
 /-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆]` -/
 def Array.mkArray6 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ : α) : Array α :=
-  ((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆
+  ((((((mkEmpty 6).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆
 
 /-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆, a₇]` -/
 def Array.mkArray7 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ : α) : Array α :=
-  (((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇
+  (((((((mkEmpty 7).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇
 
 /-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆, a₇, a₈]` -/
 def Array.mkArray8 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ a₈ : α) : Array α :=
-  ((((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇).push a₈
+  ((((((((mkEmpty 8).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇).push a₈
 
 /--
 Set an element in an array without bounds checks, using a `Fin` index.
@@ -2578,13 +2593,13 @@ protected def Array.appendCore {α : Type u}  (as : Array α) (bs : Array α) : 
   loop bs.size 0 as
 
 /-- Auxiliary definition for `List.toArray`. -/
-@[inlineIfReduce]
+@[inline_if_reduce]
 def List.toArrayAux : List α → Array α → Array α
   | nil,       r => r
   | cons a as, r => toArrayAux as (r.push a)
 
 /-- A non-tail-recursive version of `List.length`, used for `List.toArray`. -/
-@[inlineIfReduce]
+@[inline_if_reduce]
 def List.redLength : List α → Nat
   | nil       => 0
   | cons _ as => as.redLength.succ
@@ -2595,7 +2610,7 @@ Convert a `List α` into an `Array α`. This is O(n) in the length of the list.
 This function is exported to C, where it is called by `Array.mk`
 (the constructor) to implement this functionality.
 -/
-@[inline, matchPattern, export lean_list_to_array]
+@[inline, match_pattern, export lean_list_to_array]
 def List.toArray (as : List α) : Array α :=
   as.toArrayAux (Array.mkEmpty as.redLength)
 
@@ -2745,6 +2760,7 @@ export MonadLiftT (monadLift)
 /-- Lifts a value from monad `m` into monad `n`. -/
 abbrev liftM := @monadLift
 
+@[always_inline]
 instance (m n o) [MonadLift n o] [MonadLiftT m n] : MonadLiftT m o where
   monadLift x := MonadLift.monadLift (m := n) (monadLift x)
 
@@ -2773,6 +2789,7 @@ class MonadFunctorT (m : Type u → Type v) (n : Type u → Type w) where
 
 export MonadFunctorT (monadMap)
 
+@[always_inline]
 instance (m n o) [MonadFunctor n o] [MonadFunctorT m n] : MonadFunctorT m o where
   monadMap f := MonadFunctor.monadMap (m := n) (monadMap (m := m) f)
 
@@ -2883,7 +2900,8 @@ instance (ρ : Type u) (m : Type u → Type v) (α : Type u) [Inhabited (m α)] 
 If `x : ReaderT ρ m α` and `r : ρ`, then `x.run r : ρ` runs the monad with the
 given reader state.
 -/
-@[inline] def ReaderT.run {ρ : Type u} {m : Type u → Type v} {α : Type u} (x : ReaderT ρ m α) (r : ρ) : m α :=
+@[always_inline, inline]
+def ReaderT.run {ρ : Type u} {m : Type u → Type v} {α : Type u} (x : ReaderT ρ m α) (r : ρ) : m α :=
   x r
 
 namespace ReaderT
@@ -2894,6 +2912,7 @@ variable {ρ : Type u} {m : Type u → Type v} {α : Type u}
 instance  : MonadLift m (ReaderT ρ m) where
   monadLift x := fun _ => x
 
+@[always_inline]
 instance (ε) [MonadExceptOf ε m] : MonadExceptOf ε (ReaderT ρ m) where
   throw e  := liftM (m := m) (throw e)
   tryCatch := fun x c r => tryCatchThe ε (x r) (fun e => (c e) r)
@@ -2904,21 +2923,26 @@ section
 variable {ρ : Type u} {m : Type u → Type v}
 
 /-- `(← read) : ρ` gets the read-only state of a `ReaderT ρ`. -/
-@[inline] protected def read [Monad m] : ReaderT ρ m ρ :=
+@[always_inline, inline]
+protected def read [Monad m] : ReaderT ρ m ρ :=
   pure
 
 /-- The `pure` operation of the `ReaderT` monad. -/
-@[inline] protected def pure [Monad m] {α} (a : α) : ReaderT ρ m α :=
+@[always_inline, inline]
+protected def pure [Monad m] {α} (a : α) : ReaderT ρ m α :=
   fun _ => pure a
 
 /-- The `bind` operation of the `ReaderT` monad. -/
-@[inline] protected def bind [Monad m] {α β} (x : ReaderT ρ m α) (f : α → ReaderT ρ m β) : ReaderT ρ m β :=
+@[always_inline, inline]
+protected def bind [Monad m] {α β} (x : ReaderT ρ m α) (f : α → ReaderT ρ m β) : ReaderT ρ m β :=
   fun r => bind (x r) fun a => f a r
 
+@[always_inline]
 instance [Monad m] : Functor (ReaderT ρ m) where
   map      f x r := Functor.map f (x r)
   mapConst a x r := Functor.mapConst a (x r)
 
+@[always_inline]
 instance [Monad m] : Applicative (ReaderT ρ m) where
   pure           := ReaderT.pure
   seq      f x r := Seq.seq (f r) fun _ => x () r
@@ -2935,7 +2959,8 @@ instance (ρ m) : MonadFunctor m (ReaderT ρ m) where
 `adapt (f : ρ' → ρ)` precomposes function `f` on the reader state of a
 `ReaderT ρ`, yielding a `ReaderT ρ'`.
 -/
-@[inline] protected def adapt {ρ' α : Type u} (f : ρ' → ρ) : ReaderT ρ m α → ReaderT ρ' m α :=
+@[always_inline, inline]
+protected def adapt {ρ' α : Type u} (f : ρ' → ρ) : ReaderT ρ m α → ReaderT ρ' m α :=
   fun x r => x (f r)
 
 end
@@ -2962,7 +2987,8 @@ class MonadReaderOf (ρ : Type u) (m : Type u → Type v) where
 Like `read`, but with `ρ` explicit. This is useful if a monad supports
 `MonadReaderOf` for multiple different types `ρ`.
 -/
-@[inline] def readThe (ρ : Type u) {m : Type u → Type v} [MonadReaderOf ρ m] : m ρ :=
+@[always_inline, inline]
+def readThe (ρ : Type u) {m : Type u → Type v} [MonadReaderOf ρ m] : m ρ :=
   MonadReaderOf.read
 
 /-- Similar to `MonadReaderOf`, but `ρ` is an `outParam` for convenience. -/
@@ -2997,7 +3023,8 @@ class MonadWithReaderOf (ρ : Type u) (m : Type u → Type v) where
 Like `withReader`, but with `ρ` explicit. This is useful if a monad supports
 `MonadWithReaderOf` for multiple different types `ρ`.
 -/
-@[inline] def withTheReader (ρ : Type u) {m : Type u → Type v} [MonadWithReaderOf ρ m] {α : Type u} (f : ρ → ρ) (x : m α) : m α :=
+@[always_inline, inline]
+def withTheReader (ρ : Type u) {m : Type u → Type v} [MonadWithReaderOf ρ m] {α : Type u} (f : ρ → ρ) (x : m α) : m α :=
   MonadWithReaderOf.withReader f x
 
 /-- Similar to `MonadWithReaderOf`, but `ρ` is an `outParam` for convenience. -/
@@ -3049,14 +3076,16 @@ abbrev getThe (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] : m σ :
 Like `modify`, but with `σ` explicit. This is useful if a monad supports
 `MonadStateOf` for multiple different types `σ`.
 -/
-@[inline] abbrev modifyThe (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] (f : σ → σ) : m PUnit :=
+@[always_inline, inline]
+abbrev modifyThe (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] (f : σ → σ) : m PUnit :=
   MonadStateOf.modifyGet fun s => (PUnit.unit, f s)
 
 /--
 Like `modifyGet`, but with `σ` explicit. This is useful if a monad supports
 `MonadStateOf` for multiple different types `σ`.
 -/
-@[inline] abbrev modifyGetThe {α : Type u} (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] (f : σ → Prod α σ) : m α :=
+@[always_inline, inline]
+abbrev modifyGetThe {α : Type u} (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] (f : σ → Prod α σ) : m α :=
   MonadStateOf.modifyGet f
 
 /-- Similar to `MonadStateOf`, but `σ` is an `outParam` for convenience. -/
@@ -3086,18 +3115,21 @@ instance (σ : Type u) (m : Type u → Type v) [MonadStateOf σ m] : MonadState 
 It is equivalent to `do put (f (← get))`, but `modify f` may be preferable
 because the former does not use the state linearly (without sufficient inlining).
 -/
-@[inline] def modify {σ : Type u} {m : Type u → Type v} [MonadState σ m] (f : σ → σ) : m PUnit :=
+@[always_inline, inline]
+def modify {σ : Type u} {m : Type u → Type v} [MonadState σ m] (f : σ → σ) : m PUnit :=
   modifyGet fun s => (PUnit.unit, f s)
 
 /--
 `getModify f` gets the state, applies function `f`, and returns the old value
 of the state. It is equivalent to `get <* modify f` but may be more efficient.
 -/
-@[inline] def getModify {σ : Type u} {m : Type u → Type v} [MonadState σ m] [Monad m] (f : σ → σ) : m σ :=
+@[always_inline, inline]
+def getModify {σ : Type u} {m : Type u → Type v} [MonadState σ m] [Monad m] (f : σ → σ) : m σ :=
   modifyGet fun s => (s, f s)
 
 -- NOTE: The Ordering of the following two instances determines that the top-most `StateT` Monad layer
 -- will be picked first
+@[always_inline]
 instance {σ : Type u} {m : Type u → Type v} {n : Type u → Type w} [MonadLift m n] [MonadStateOf σ m] : MonadStateOf σ n where
   get         := liftM (m := m) MonadStateOf.get
   set       s := liftM (m := m) (MonadStateOf.set s)
@@ -3137,24 +3169,29 @@ instance [Inhabited ε] : Inhabited (EStateM ε σ α) where
   default := fun s => Result.error default s
 
 /-- The `pure` operation of the `EStateM` monad. -/
-@[inline] protected def pure (a : α) : EStateM ε σ α := fun s =>
+@[always_inline, inline]
+protected def pure (a : α) : EStateM ε σ α := fun s =>
   Result.ok a s
 
 /-- The `set` operation of the `EStateM` monad. -/
-@[inline] protected def set (s : σ) : EStateM ε σ PUnit := fun _ =>
+@[always_inline, inline]
+protected def set (s : σ) : EStateM ε σ PUnit := fun _ =>
   Result.ok ⟨⟩ s
 
 /-- The `get` operation of the `EStateM` monad. -/
-@[inline] protected def get : EStateM ε σ σ := fun s =>
+@[always_inline, inline]
+protected def get : EStateM ε σ σ := fun s =>
   Result.ok s s
 
 /-- The `modifyGet` operation of the `EStateM` monad. -/
-@[inline] protected def modifyGet (f : σ → Prod α σ) : EStateM ε σ α := fun s =>
+@[always_inline, inline]
+protected def modifyGet (f : σ → Prod α σ) : EStateM ε σ α := fun s =>
   match f s with
   | (a, s) => Result.ok a s
 
 /-- The `throw` operation of the `EStateM` monad. -/
-@[inline] protected def throw (e : ε) : EStateM ε σ α := fun s =>
+@[always_inline, inline]
+protected def throw (e : ε) : EStateM ε σ α := fun s =>
   Result.error e s
 
 /--
@@ -3170,43 +3207,50 @@ class Backtrackable (δ : outParam (Type u)) (σ : Type u) where
   restore : σ → δ → σ
 
 /-- Implementation of `tryCatch` for `EStateM` where the state is `Backtrackable`. -/
-@[inline] protected def tryCatch {δ} [Backtrackable δ σ] {α} (x : EStateM ε σ α) (handle : ε → EStateM ε σ α) : EStateM ε σ α := fun s =>
+@[always_inline, inline]
+protected def tryCatch {δ} [Backtrackable δ σ] {α} (x : EStateM ε σ α) (handle : ε → EStateM ε σ α) : EStateM ε σ α := fun s =>
   let d := Backtrackable.save s
   match x s with
   | Result.error e s => handle e (Backtrackable.restore s d)
   | ok               => ok
 
 /-- Implementation of `orElse` for `EStateM` where the state is `Backtrackable`. -/
-@[inline] protected def orElse {δ} [Backtrackable δ σ] (x₁ : EStateM ε σ α) (x₂ : Unit → EStateM ε σ α) : EStateM ε σ α := fun s =>
+@[always_inline, inline]
+protected def orElse {δ} [Backtrackable δ σ] (x₁ : EStateM ε σ α) (x₂ : Unit → EStateM ε σ α) : EStateM ε σ α := fun s =>
   let d := Backtrackable.save s;
   match x₁ s with
   | Result.error _ s => x₂ () (Backtrackable.restore s d)
   | ok               => ok
 
 /-- Map the exception type of a `EStateM ε σ α` by a function `f : ε → ε'`. -/
-@[inline] def adaptExcept {ε' : Type u} (f : ε → ε') (x : EStateM ε σ α) : EStateM ε' σ α := fun s =>
+@[always_inline, inline]
+def adaptExcept {ε' : Type u} (f : ε → ε') (x : EStateM ε σ α) : EStateM ε' σ α := fun s =>
   match x s with
   | Result.error e s => Result.error (f e) s
   | Result.ok a s    => Result.ok a s
 
 /-- The `bind` operation of the `EStateM` monad. -/
-@[inline] protected def bind (x : EStateM ε σ α) (f : α → EStateM ε σ β) : EStateM ε σ β := fun s =>
+@[always_inline, inline]
+protected def bind (x : EStateM ε σ α) (f : α → EStateM ε σ β) : EStateM ε σ β := fun s =>
   match x s with
   | Result.ok a s    => f a s
   | Result.error e s => Result.error e s
 
 /-- The `map` operation of the `EStateM` monad. -/
-@[inline] protected def map (f : α → β) (x : EStateM ε σ α) : EStateM ε σ β := fun s =>
+@[always_inline, inline]
+protected def map (f : α → β) (x : EStateM ε σ α) : EStateM ε σ β := fun s =>
   match x s with
   | Result.ok a s    => Result.ok (f a) s
   | Result.error e s => Result.error e s
 
 /-- The `seqRight` operation of the `EStateM` monad. -/
-@[inline] protected def seqRight (x : EStateM ε σ α) (y : Unit → EStateM ε σ β) : EStateM ε σ β := fun s =>
+@[always_inline, inline]
+protected def seqRight (x : EStateM ε σ α) (y : Unit → EStateM ε σ β) : EStateM ε σ β := fun s =>
   match x s with
   | Result.ok _ s    => y () s
   | Result.error e s => Result.error e s
 
+@[always_inline]
 instance : Monad (EStateM ε σ) where
   bind     := EStateM.bind
   pure     := EStateM.pure
@@ -3226,13 +3270,15 @@ instance {δ} [Backtrackable δ σ] : MonadExceptOf ε (EStateM ε σ) where
   tryCatch := EStateM.tryCatch
 
 /-- Execute an `EStateM` on initial state `s` to get a `Result`. -/
-@[inline] def run (x : EStateM ε σ α) (s : σ) : Result ε σ α := x s
+@[always_inline, inline]
+def run (x : EStateM ε σ α) (s : σ) : Result ε σ α := x s
 
 /--
 Execute an `EStateM` on initial state `s` for the returned value `α`.
 If the monadic action throws an exception, returns `none` instead.
 -/
-@[inline] def run' (x : EStateM ε σ α) (s : σ) : Option α :=
+@[always_inline, inline]
+def run' (x : EStateM ε σ α) (s : σ) : Option α :=
   match run x s with
   | Result.ok v _   => some v
   | Result.error .. => none
@@ -3336,7 +3382,7 @@ inductive Name where
 with
   /-- A hash function for names, which is stored inside the name itself as a
   computed field. -/
-  @[computedField] hash : Name → UInt64
+  @[computed_field] hash : Name → UInt64
     | .anonymous => .ofNatCore 1723 (by decide)
     | .str p s => mixHash p.hash s.hash
     | .num p v => mixHash p.hash (dite (LT.lt v UInt64.size) (fun h => UInt64.ofNatCore v h) (fun _ => UInt64.ofNatCore 17 (by decide)))
@@ -3544,6 +3590,38 @@ inductive Syntax where
   * `preresolved` is the list of possible declarations this could refer to
   -/
   | ident  (info : SourceInfo) (rawVal : Substring) (val : Name) (preresolved : List Syntax.Preresolved) : Syntax
+
+/-- Create syntax node with 1 child -/
+def Syntax.node1 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray1 a₁)
+
+/-- Create syntax node with 2 children -/
+def Syntax.node2 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray2 a₁ a₂)
+
+/-- Create syntax node with 3 children -/
+def Syntax.node3 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray3 a₁ a₂ a₃)
+
+/-- Create syntax node with 4 children -/
+def Syntax.node4 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ a₄ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray4 a₁ a₂ a₃ a₄)
+
+/-- Create syntax node with 5 children -/
+def Syntax.node5 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ a₄ a₅ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray5 a₁ a₂ a₃ a₄ a₅)
+
+/-- Create syntax node with 6 children -/
+def Syntax.node6 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ a₄ a₅ a₆ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray6 a₁ a₂ a₃ a₄ a₅ a₆)
+
+/-- Create syntax node with 7 children -/
+def Syntax.node7 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ a₄ a₅ a₆ a₇ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray7 a₁ a₂ a₃ a₄ a₅ a₆ a₇)
+
+/-- Create syntax node with 8 children -/
+def Syntax.node8 (info : SourceInfo) (kind : SyntaxNodeKind) (a₁ a₂ a₃ a₄ a₅ a₆ a₇ a₈ : Syntax) : Syntax :=
+  Syntax.node info kind (Array.mkArray8 a₁ a₂ a₃ a₄ a₅ a₆ a₇ a₈)
 
 /-- `SyntaxNodeKinds` is a set of `SyntaxNodeKind` (implemented as a list). -/
 def SyntaxNodeKinds := List SyntaxNodeKind
@@ -3800,14 +3878,14 @@ abbrev TSyntaxArray (ks : SyntaxNodeKinds) := Array (TSyntax ks)
 unsafe def TSyntaxArray.rawImpl : TSyntaxArray ks → Array Syntax := unsafeCast
 
 /-- Converts a `TSyntaxArray` to an `Array Syntax`, without reallocation. -/
-@[implementedBy TSyntaxArray.rawImpl]
+@[implemented_by TSyntaxArray.rawImpl]
 opaque TSyntaxArray.raw (as : TSyntaxArray ks) : Array Syntax := Array.empty
 
 /-- Implementation of `TSyntaxArray.mk`. -/
 unsafe def TSyntaxArray.mkImpl : Array Syntax → TSyntaxArray ks := unsafeCast
 
 /-- Converts an `Array Syntax` to a `TSyntaxArray`, without reallocation. -/
-@[implementedBy TSyntaxArray.mkImpl]
+@[implemented_by TSyntaxArray.mkImpl]
 opaque TSyntaxArray.mk (as : Array Syntax) : TSyntaxArray ks := Array.empty
 
 /-- Constructs a synthetic `SourceInfo` using a `ref : Syntax` for the span. -/
@@ -3942,7 +4020,8 @@ Run `x : m α` with a modified value for the `ref`. This is not exactly
 the same as `MonadRef.withRef`, because it uses `replaceRef` to avoid putting
 syntax with bad spans in the state.
 -/
-@[inline] def withRef {m : Type → Type} [Monad m] [MonadRef m] {α} (ref : Syntax) (x : m α) : m α :=
+@[always_inline, inline]
+def withRef [Monad m] [MonadRef m] {α} (ref : Syntax) (x : m α) : m α :=
   bind getRef fun oldRef =>
   let ref := replaceRef ref oldRef
   MonadRef.withRef ref x
@@ -3979,10 +4058,11 @@ class MonadQuotation (m : Type → Type) extends MonadRef m where
 export MonadQuotation (getCurrMacroScope getMainModule withFreshMacroScope)
 
 /-- Construct a synthetic `SourceInfo` from the `ref` in the monad state. -/
+@[inline]
 def MonadRef.mkInfoFromRefPos [Monad m] [MonadRef m] : m SourceInfo :=
   return SourceInfo.fromRef (← getRef)
 
-instance {m n : Type → Type} [MonadFunctor m n] [MonadLift m n] [MonadQuotation m] : MonadQuotation n where
+instance [MonadFunctor m n] [MonadLift m n] [MonadQuotation m] : MonadQuotation n where
   getCurrMacroScope   := liftM (m := m) getCurrMacroScope
   getMainModule       := liftM (m := m) getMainModule
   withFreshMacroScope := monadMap (m := m) withFreshMacroScope
@@ -4297,7 +4377,7 @@ unsafe def mkMethodsImp (methods : Methods) : MethodsRef :=
   unsafeCast methods
 
 /-- Make an opaque reference to a `Methods`. -/
-@[implementedBy mkMethodsImp]
+@[implemented_by mkMethodsImp]
 opaque mkMethods (methods : Methods) : MethodsRef
 
 instance : Inhabited MethodsRef where
@@ -4308,7 +4388,7 @@ unsafe def getMethodsImp : MacroM Methods :=
   bind read fun ctx => pure (unsafeCast (ctx.methods))
 
 /-- Extract the methods list from the `MacroM` state. -/
-@[implementedBy getMethodsImp] opaque getMethods : MacroM Methods
+@[implemented_by getMethodsImp] opaque getMethods : MacroM Methods
 
 /--
 `expandMacro? stx` returns `some stxNew` if `stx` is a macro,
@@ -4356,7 +4436,7 @@ abbrev UnexpandM := ReaderT Syntax (EStateM Unit Unit)
 /--
 Function that tries to reverse macro expansions as a post-processing step of delaboration.
 While less general than an arbitrary delaborator, it can be declared without importing `Lean`.
-Used by the `[appUnexpander]` attribute.
+Used by the `[app_unexpander]` attribute.
 -/
 -- a `kindUnexpander` could reasonably be added later
 abbrev Unexpander := Syntax → UnexpandM Syntax
