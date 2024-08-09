@@ -1248,6 +1248,24 @@ theorem neg_eq_not_add (x : BitVec w) : -x = ~~~x + 1 := by
   have hx : x.toNat < 2^w := x.isLt
   rw [Nat.sub_sub, Nat.add_comm 1 x.toNat, ← Nat.sub_sub, Nat.sub_add_cancel (by omega)]
 
+@[simp]
+theorem neg_neg {a : BitVec w} : - - a = a := by
+  by_cases h : a = 0
+  · subst h
+    simp
+  · simp only [toNat_eq, toNat_neg]
+    rw [toNat_eq] at h
+    simp only [ofNat_eq_ofNat, toNat_ofNat, Nat.zero_mod] at h
+    rw [Nat.mod_eq_of_lt (a := 2 ^ w - a.toNat) (by omega)]
+    rw [Nat.mod_eq_of_lt (by omega)]
+    omega
+
+theorem neg_neq_iff_neq_neg {a b : BitVec w} : -a ≠ b ↔ a ≠ -b:= by
+  constructor
+    <;> intro h h'
+    <;> subst h'
+    <;> simp [BitVec.neg_neg] at h
+
 /-! ### mul -/
 
 theorem mul_def {n} {x y : BitVec n} : x * y = (ofFin <| x.toFin * y.toFin) := by rfl
